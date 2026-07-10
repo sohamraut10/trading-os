@@ -1,0 +1,134 @@
+{
+  "title": "Trading OS",
+  "uid": "trading-os-main",
+  "schemaVersion": 38,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "TRUE Signals (1h)",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "increase(trading_true_signals_total[1h])", "datasource": "Prometheus" }],
+      "options": { "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "green", "mode": "fixed" } } }
+    },
+    {
+      "id": 2, "type": "stat", "title": "FALSE Signals (1h)",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "increase(trading_false_signals_total[1h])", "datasource": "Prometheus" }],
+      "options": { "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "red", "mode": "fixed" } } }
+    },
+    {
+      "id": 3, "type": "stat", "title": "Portfolio Equity (USD)",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "trading_portfolio_equity_usd", "datasource": "Prometheus" }],
+      "options": { "colorMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" } }
+    },
+    {
+      "id": 4, "type": "stat", "title": "Daily P&L %",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "trading_daily_pnl_pct * 100", "datasource": "Prometheus" }],
+      "options": { "colorMode": "background" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": -1 },
+              { "color": "green", "value": 0 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5, "type": "stat", "title": "Open Trades",
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "trading_open_trades", "datasource": "Prometheus" }],
+      "options": { "colorMode": "value" }
+    },
+    {
+      "id": 6, "type": "stat", "title": "Circuit Breaker",
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
+      "targets": [{ "expr": "trading_circuit_breaker_active", "datasource": "Prometheus" }],
+      "options": { "colorMode": "background" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "CLEAR", "color": "green" }, "1": { "text": "ACTIVE", "color": "red" } } }
+          ]
+        }
+      }
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Cycle Latency (ms)",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "rate(trading_cycle_latency_ms_sum[1m]) / rate(trading_cycle_latency_ms_count[1m])", "legendFormat": "avg latency", "datasource": "Prometheus" },
+        { "expr": "histogram_quantile(0.95, rate(trading_cycle_latency_ms_bucket[1m]))", "legendFormat": "p95 latency", "datasource": "Prometheus" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms", "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Agent Confidence Over Time",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "trading_agent_confidence{agent='Technical'}", "legendFormat": "Technical", "datasource": "Prometheus" },
+        { "expr": "trading_agent_confidence{agent='Sentiment'}", "legendFormat": "Sentiment", "datasource": "Prometheus" },
+        { "expr": "trading_agent_confidence{agent='Quant'}", "legendFormat": "Quant", "datasource": "Prometheus" },
+        { "expr": "trading_agent_confidence{agent='OrderFlow'}", "legendFormat": "Order Flow", "datasource": "Prometheus" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100, "color": { "mode": "palette-classic" } }
+      }
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Signal Rate (per minute)",
+      "gridPos": { "x": 0, "y": 12, "w": 8, "h": 7 },
+      "targets": [
+        { "expr": "rate(trading_true_signals_total[1m]) * 60", "legendFormat": "TRUE signals/min", "datasource": "Prometheus" },
+        { "expr": "rate(trading_false_signals_total[1m]) * 60", "legendFormat": "FALSE signals/min", "datasource": "Prometheus" }
+      ],
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } }
+    },
+    {
+      "id": 10, "type": "gauge", "title": "Portfolio Exposure",
+      "gridPos": { "x": 8, "y": 12, "w": 4, "h": 7 },
+      "targets": [{ "expr": "trading_portfolio_exposure_pct * 100", "datasource": "Prometheus" }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 30 }, { "color": "red", "value": 38 }]
+          }
+        }
+      }
+    },
+    {
+      "id": 11, "type": "gauge", "title": "Consecutive Losses",
+      "gridPos": { "x": 12, "y": 12, "w": 4, "h": 7 },
+      "targets": [{ "expr": "trading_consecutive_losses", "datasource": "Prometheus" }],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 5,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 2 }, { "color": "red", "value": 3 }]
+          }
+        }
+      }
+    },
+    {
+      "id": 12, "type": "stat", "title": "DA Vetoes (1h)",
+      "gridPos": { "x": 16, "y": 12, "w": 4, "h": 7 },
+      "targets": [{ "expr": "increase(trading_da_vetoes_total[1h])", "datasource": "Prometheus" }],
+      "options": { "colorMode": "background" },
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "orange", "mode": "fixed" } } }
+    }
+  ]
+}

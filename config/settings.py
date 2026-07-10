@@ -1,0 +1,86 @@
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel
+from typing import Literal
+
+
+class AgentWeights(BaseModel):
+    technical: float = 0.30
+    sentiment: float = 0.20
+    quant: float = 0.25
+    order_flow: float = 0.25
+
+    def normalize(self) -> dict:
+        total = self.technical + self.sentiment + self.quant + self.order_flow
+        return {
+            "technical": self.technical / total,
+            "sentiment": self.sentiment / total,
+            "quant": self.quant / total,
+            "order_flow": self.order_flow / total,
+        }
+
+
+class RiskConfig(BaseModel):
+    max_position_pct: float = 0.05
+    max_portfolio_exposure: float = 0.40
+    max_daily_drawdown: float = 0.03
+    max_trade_drawdown: float = 0.02
+    default_rr_ratio: float = 2.0
+    max_open_trades: int = 10
+    volatility_circuit_breaker_vix: float = 35.0
+
+
+class ConsensusConfig(BaseModel):
+    min_agents_agree: int = 3
+    min_avg_confidence: float = 68.0
+    min_agent_confidence: float = 55.0
+    devils_advocate_veto_threshold: float = 85.0
+
+
+class Settings(BaseSettings):
+    # App
+    app_name: str = "TradingOS"
+    environment: Literal["development", "staging", "production"] = "development"
+    debug: bool = False
+    log_level: str = "INFO"
+
+    # API Keys
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    alpaca_api_key: str = ""
+    alpaca_secret_key: str = ""
+    alpaca_base_url: str = "https://paper-api.alpaca.markets"
+    binance_api_key: str = ""
+    binance_secret: str = ""
+    polygon_api_key: str = ""
+    news_api_key: str = ""
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+
+    # Infrastructure
+    redis_url: str = "redis://localhost:6379"
+    database_url: str = "postgresql+asyncpg://trading:trading@localhost:5432/trading_os"
+    kafka_bootstrap_servers: str = "localhost:9092"
+
+    # Sub-configs
+    agent_weights: AgentWeights = AgentWeights()
+    risk: RiskConfig = RiskConfig()
+    consensus: ConsensusConfig = ConsensusConfig()
+
+    # LLM
+    primary_llm_model: str = "claude-sonnet-4-6"
+    fallback_llm_model: str = "claude-haiku-4-5-20251001"
+    llm_max_tokens: int = 2048
+    llm_temperature: float = 0.1           # low = deterministic analysis
+
+    # Execution
+    slippage_tolerance_bps: float = 5.0    # basis points
+    smart_order_min_size_usd: float = 10000.0
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_nested_delimiter="__",
+        extra="ignore",
+    )
+
+
+settings = Settings()
