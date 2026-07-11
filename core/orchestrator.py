@@ -33,6 +33,7 @@ from core.streaming.kafka_bus import InMemoryBus, make_bus
 from core.streaming.event_bus import EventBus
 from core.strategy.selector import StrategySelector
 from core.strategy.strategies import STRATEGY_REGISTRY
+from core.persistence.repository import Repository
 
 log = logging.getLogger("trading_os.orchestrator")
 
@@ -88,6 +89,7 @@ class Orchestrator:
         auto_execute: bool = False,
         strategy_override: str | None = None,
         event_bus=None,
+        repository: Repository | None = None,
     ):
         self.asset = asset
         self.timeframe = timeframe
@@ -107,6 +109,9 @@ class Orchestrator:
             self._bus = EventBus(settings.kafka_bootstrap_servers)
         else:
             self._bus = event_bus
+        self._repository = repository
+        if self._repository is not None:
+            self._bus.on("*", self._repository.record_event)
 
         # Agent instances — reused across cycles
         self._tech = TechnicalAnalystAgent()
@@ -304,11 +309,16 @@ class Orchestrator:
             # Emit FinalCall
             await self._bus.publish("FinalCall", request_id, signal.to_dict())
 
-            await asyncio.gather(
+            persistence_tasks = [
                 self._alerts.signal_generated(signal),
                 self._journal.log_signal(signal, price),
-                return_exceptions=True
-            )
+            ]
+            if self._repository is not None:
+                persistence_tasks.append(
+                    self._repository.record_signal(signal, self.timeframe, strategy.strategy_type.value)
+                )
+                persistence_tasks.append(self._repository.snapshot_portfolio(self._portfolio))
+            await asyncio.gather(*persistence_tasks, return_exceptions=True)
             result = CycleResult(
                 request_id=request_id,
                 asset=self.asset,
