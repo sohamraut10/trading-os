@@ -117,3 +117,67 @@ class Repository:
                 )
         except Exception:
             log.exception("Failed to persist portfolio snapshot")
+
+    async def load_latest_portfolio_snapshot(self) -> dict | None:
+        """
+        Restores equity/cash/daily_pnl_pct/open_trades from the most recent
+        snapshot. Needed on serverless: each cold start gets a fresh in-memory
+        PortfolioState, so without this every cold start would silently reset
+        to the hardcoded starting equity instead of resuming.
+        """
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT equity, cash, daily_pnl_pct, open_trades "
+                    "FROM portfolio_snapshots ORDER BY snapshot_at DESC LIMIT 1"
+                )
+                return dict(row) if row else None
+        except Exception:
+            log.exception("Failed to load latest portfolio snapshot")
+            return None
+
+    async def fetch_recent_events(self, after: str | None = None, limit: int = 200) -> list[dict]:
+        """
+        Returns events newer than the given event_id cursor (or the most
+        recent `limit` if no cursor given), oldest first — the polling
+        replacement for the WebSocket event stream on deployments (like
+        Vercel) that can't hold a persistent connection open.
+        """
+        if not self._pool:
+            return []
+        try:
+            async with self._pool.acquire() as conn:
+                if after:
+                    cursor_ts = await conn.fetchval(
+                        "SELECT created_at FROM events WHERE event_id = $1::uuid", after
+                    )
+                    if cursor_ts is None:
+                        rows = await conn.fetch(
+                            "SELECT * FROM (SELECT * FROM events ORDER BY created_at DESC LIMIT $1) t ORDER BY created_at ASC",
+                            limit,
+                        )
+                    else:
+                        rows = await conn.fetch(
+                            "SELECT * FROM events WHERE created_at > $1 ORDER BY created_at ASC LIMIT $2",
+                            cursor_ts, limit,
+                        )
+                else:
+                    rows = await conn.fetch(
+                        "SELECT * FROM (SELECT * FROM events ORDER BY created_at DESC LIMIT $1) t ORDER BY created_at ASC",
+                        limit,
+                    )
+                return [
+                    {
+                        "event_id": str(r["event_id"]),
+                        "cycle_id": r["cycle_id"],
+                        "ts": r["ts"].timestamp(),
+                        "type": r["event_type"],
+                        "payload": json.loads(r["payload"]),
+                    }
+                    for r in rows
+                ]
+        except Exception:
+            log.exception("Failed to fetch recent events")
+            return []

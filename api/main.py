@@ -5,12 +5,13 @@ WebSocket endpoint streams live signal decisions.
 """
 import asyncio
 import logging
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, Response, Depends, Header
+from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, Response, Depends, Header
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -39,7 +40,6 @@ class AppState:
     def __init__(self):
         self.risk = RiskEngine()
 
-        import os
         mock_mode = (
             os.environ.get("MOCK_MODE", "false").lower() == "true"
         )
@@ -138,6 +138,19 @@ def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Ke
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
+def require_cron_secret(authorization: str | None = Header(default=None)) -> None:
+    """
+    Gate for POST /cron/tick. Fails closed (unlike require_api_key): with no
+    cron_secret configured the endpoint is disabled outright, since it exists
+    only to be wired into a scheduler (Vercel Cron) and has no legitimate
+    unauthenticated caller.
+    """
+    if not settings.cron_secret:
+        raise HTTPException(status_code=503, detail="Cron endpoint not configured (cron_secret unset)")
+    if authorization != f"Bearer {settings.cron_secret}":
+        raise HTTPException(status_code=401, detail="Invalid or missing cron secret")
+
+
 def _get_or_create_orchestrator(asset: str, timeframe: str, candle_limit: int) -> Orchestrator:
     """
     One Orchestrator per (asset, timeframe), reused across calls so /analyze
@@ -221,11 +234,41 @@ async def live_suggestions_loop():
 async def lifespan(app: FastAPI):
     await state.news_feed.setup()
     await state.db.connect()
-    loop_task = asyncio.create_task(live_suggestions_loop())
+
+    # Resume from the last known portfolio state instead of resetting to the
+    # hardcoded starting equity — critical on serverless, where every cold
+    # start otherwise gets a fresh in-memory PortfolioState.
+    snapshot = await state.db.load_latest_portfolio_snapshot()
+    if snapshot:
+        state.portfolio.equity = float(snapshot["equity"])
+        state.portfolio.cash = float(snapshot["cash"])
+        state.portfolio.daily_pnl_pct = float(snapshot["daily_pnl_pct"])
+        state.portfolio.open_trades = int(snapshot["open_trades"])
+        # /portfolio, /health, and /metrics all read equity/cash from the
+        # broker's own ledger, not from state.portfolio — for PaperBroker
+        # (the default with no Alpaca key) that ledger is otherwise just as
+        # in-memory-only as state.portfolio was, so it needs the same resume.
+        # Only cash can be restored: PaperBroker derives reported equity as
+        # cash + open-positions-value, and per-symbol positions aren't
+        # captured in portfolio_snapshots, so open positions — and any
+        # unrealized P&L they represented — are still lost across a cold
+        # start. Equity will read as (resumed cash + 0 positions) until a
+        # new trade opens a position again.
+        if isinstance(state.broker, PaperBroker):
+            state.broker._cash = state.portfolio.cash
+        log.info("Resumed portfolio from snapshot: equity=%.2f", state.portfolio.equity)
+
+    # There's no persistent process to run this loop in on serverless
+    # platforms (e.g. Vercel sets VERCEL=1) — a Vercel Cron hitting
+    # POST /cron/tick replaces it there instead.
+    loop_task = None
+    if not os.environ.get("VERCEL"):
+        loop_task = asyncio.create_task(live_suggestions_loop())
     try:
         yield
     finally:
-        loop_task.cancel()
+        if loop_task:
+            loop_task.cancel()
         await state.db.close()
 
 
@@ -243,9 +286,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Routes are defined on `router` (below) rather than `app` directly so
+# api/index.py (the Vercel entrypoint) can include the exact same route
+# definitions under an /api prefix on its own top-level FastAPI instance.
+# Mounting sub-apps via app.mount() doesn't run their lifespan — this
+# avoids that trap by never mounting an app-with-a-lifespan as a sub-app.
+router = APIRouter()
+
 # Serve the built dashboard's assets if it's been built; skip otherwise
 # rather than creating empty directories in the working tree on every boot.
-import os
 from fastapi.staticfiles import StaticFiles
 _dashboard_assets_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dashboard", "dist", "assets")
 if os.path.isdir(_dashboard_assets_dir):
@@ -279,8 +328,8 @@ class ClosePositionRequest(BaseModel):
     asset: str
 
 
-@app.get("/", response_class=HTMLResponse)
-@app.get("/dashboard", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse)
+@router.get("/dashboard", response_class=HTMLResponse)
 async def get_dashboard():
     import os
     dashboard_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dashboard", "dist", "index.html")
@@ -290,7 +339,7 @@ async def get_dashboard():
         return f.read()
 
 
-@app.get("/candles")
+@router.get("/candles")
 async def get_candles_endpoint(asset: str, timeframe: str = "1h", limit: int = 100):
     try:
         candles = await state.market_data.get_candles(asset, timeframe, limit)
@@ -309,7 +358,7 @@ async def get_candles_endpoint(asset: str, timeframe: str = "1h", limit: int = 1
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/health")
+@router.get("/health")
 async def health():
     return {
         "status": "ok",
@@ -319,7 +368,7 @@ async def health():
     }
 
 
-@app.get("/metrics", response_class=Response)
+@router.get("/metrics", response_class=Response)
 async def prometheus_metrics():
     """Prometheus-compatible /metrics endpoint."""
     account = await state.broker.get_account()
@@ -335,7 +384,7 @@ async def prometheus_metrics():
     return Response(content=trading_metrics.render(), media_type="text/plain; version=0.0.4")
 
 
-@app.post("/analyze")
+@router.post("/analyze")
 async def analyze(req: AnalyzeRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict:
     """
     Core endpoint: run full multi-agent consensus pipeline on a given asset.
@@ -347,7 +396,7 @@ async def analyze(req: AnalyzeRequest, x_api_key: str | None = Header(default=No
     return await run_consensus_cycle(req.asset, req.timeframe, req.candle_limit, req.execute_if_signal)
 
 
-@app.post("/backtest")
+@router.post("/backtest")
 async def backtest(req: BacktestRequest) -> dict:
     candles = await state.market_data.get_candles(req.asset, req.timeframe, req.candle_limit)
     bt = Backtester()
@@ -362,7 +411,7 @@ class OptimizeRequest(BaseModel):
     top_k: int = Field(5, ge=1, le=10)
 
 
-@app.post("/backtest/optimize")
+@router.post("/backtest/optimize")
 async def optimize(req: OptimizeRequest) -> dict:
     """Grid search over SL/TP parameters with walk-forward validation."""
     candles = await state.market_data.get_candles(req.asset, req.timeframe, req.candle_limit)
@@ -377,7 +426,7 @@ async def optimize(req: OptimizeRequest) -> dict:
     }
 
 
-@app.get("/portfolio")
+@router.get("/portfolio")
 async def portfolio() -> dict:
     account = await state.broker.get_account()
     positions = await state.broker.get_positions()
@@ -391,12 +440,12 @@ async def portfolio() -> dict:
     }
 
 
-@app.get("/agents/performance")
+@router.get("/agents/performance")
 async def agent_performance() -> dict:
     return state.weights_manager.get_performance_report()
 
 
-@app.post("/portfolio/reset")
+@router.post("/portfolio/reset")
 async def reset_portfolio(_: None = Depends(require_api_key)) -> dict:
     if settings.alpaca_api_key:
         state.broker = AlpacaBroker(
@@ -413,7 +462,7 @@ async def reset_portfolio(_: None = Depends(require_api_key)) -> dict:
         return {"status": "reset", "initial_equity": 100_000.0}
 
 
-@app.post("/trade/submit")
+@router.post("/trade/submit")
 async def submit_trade(req: TradeRequest, _: None = Depends(require_api_key)):
     from core.execution.broker_interface import Order, OrderType
     price = await state.market_data.get_current_price(req.asset)
@@ -447,7 +496,7 @@ async def submit_trade(req: TradeRequest, _: None = Depends(require_api_key)):
     }
 
 
-@app.post("/portfolio/close")
+@router.post("/portfolio/close")
 async def close_position(req: ClosePositionRequest, _: None = Depends(require_api_key)):
     positions = await state.broker.get_positions()
     if req.asset not in positions:
@@ -477,18 +526,52 @@ async def close_position(req: ClosePositionRequest, _: None = Depends(require_ap
 class StrategySelectRequest(BaseModel):
     strategy: str | None
 
-@app.post("/strategy/select")
+@router.post("/strategy/select")
 async def post_strategy_select(req: StrategySelectRequest, _: None = Depends(require_api_key)):
     state.pinned_strategy = req.strategy
     return {"status": "success", "pinned_strategy": req.strategy}
 
 
-@app.get("/cycles/{cycle_id}/events")
+@router.get("/cycles/{cycle_id}/events")
 async def get_cycle_events(cycle_id: str):
     return state.event_bus.get_cycle_events(cycle_id)
 
 
-@app.websocket("/ws/events")
+@router.get("/events/recent")
+async def get_recent_events(after: str | None = None, limit: int = 200):
+    """
+    Polling replacement for /ws/events on deployments that can't hold a
+    WebSocket open (e.g. Vercel serverless functions). Returns events in the
+    same {event_id, cycle_id, ts, type, payload} shape the dashboard's event
+    reducer already expects. Pass the last-seen event_id as `after` to fetch
+    only what's new. Requires DB persistence (state.db) to be connected;
+    returns an empty list otherwise.
+    """
+    limit = max(1, min(limit, 500))
+    return await state.db.fetch_recent_events(after=after, limit=limit)
+
+
+@router.get("/cron/tick")
+async def cron_tick(_: None = Depends(require_cron_secret)) -> dict:
+    """
+    Runs one consensus cycle per watchlist asset. Replaces live_suggestions_loop
+    on serverless platforms with no persistent process to run a background
+    loop in. Vercel Cron invokes paths with GET and, when a CRON_SECRET env
+    var is set on the project, automatically sends
+    `Authorization: Bearer <CRON_SECRET>` — matching require_cron_secret
+    exactly, so no extra wiring is needed beyond vercel.json's crons entry.
+    """
+    if not settings.enable_live_suggestions:
+        return {"status": "disabled", "results": []}
+    assets = [a.strip() for a in settings.live_suggestions_assets.split(",") if a.strip()]
+    results = []
+    for asset in assets:
+        signal_dict = await run_consensus_cycle(asset, timeframe="1h", candle_limit=300, execute_if_signal=False)
+        results.append({"asset": asset, "final_decision": signal_dict.get("final_decision", "ERROR")})
+    return {"status": "ok", "results": results}
+
+
+@router.websocket("/ws/events")
 async def ws_events(websocket: WebSocket):
     """
     WebSocket: streams every consensus cycle event in real-time.
@@ -514,7 +597,7 @@ async def ws_events(websocket: WebSocket):
             state._ws_events_clients.remove(websocket)
 
 
-@app.websocket("/ws/signals")
+@router.websocket("/ws/signals")
 async def ws_signals(websocket: WebSocket):
     """
     WebSocket: streams every signal decision in real-time to connected dashboards.
@@ -527,5 +610,8 @@ async def ws_signals(websocket: WebSocket):
     except WebSocketDisconnect:
         if websocket in state._ws_clients:
             state._ws_clients.remove(websocket)
+
+
+app.include_router(router)
 
 
