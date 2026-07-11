@@ -16,25 +16,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from config.settings import settings
-from core.agents import (
-    TechnicalAnalystAgent, SentimentAgent, QuantAgent,
-    OrderFlowAgent, DevilsAdvocateAgent, ConsensusEngine,
-    MarketContext, TradeSignal,
-)
 from core.data.market_data import BinanceProvider, AlpacaProvider, MockProvider
 from core.data.news_feed import NewsFeed
 from core.risk.risk_engine import RiskEngine, PortfolioState
 from core.execution.broker_interface import PaperBroker, SmartOrderRouter, AlpacaBroker
 from core.backtest.backtester import Backtester
 from core.backtest.optimizer import BacktestOptimizer, ParamGrid
-from core.monitoring.regime_detector import detect_regime
 from core.monitoring.alerts import AlertRouter
 from core.monitoring.trade_journal import TradeJournal
 from core.monitoring.metrics import metrics as trading_metrics
 from core.learning.adaptive_weights import AdaptiveWeightManager
 from core.streaming.event_bus import EventBus
-from core.strategy.selector import StrategySelector
 from core.persistence.repository import Repository
+from core.orchestrator import Orchestrator
 
 log = logging.getLogger("trading_os.api")
 
@@ -43,12 +37,6 @@ log = logging.getLogger("trading_os.api")
 
 class AppState:
     def __init__(self):
-        self.technical = TechnicalAnalystAgent()
-        self.sentiment = SentimentAgent(api_key=settings.anthropic_api_key)
-        self.quant = QuantAgent()
-        self.order_flow = OrderFlowAgent()
-        self.da = DevilsAdvocateAgent()
-        self.meta = ConsensusEngine()
         self.risk = RiskEngine()
 
         import os
@@ -98,11 +86,15 @@ class AppState:
         # Active WebSocket connections for live streaming
         self._ws_clients: list[WebSocket] = []
         self.event_bus = EventBus(settings.kafka_bootstrap_servers)
-        self.strategy_selector = StrategySelector()
         self.pinned_strategy: str | None = None
         self._ws_events_clients: list[WebSocket] = []
         self.db = Repository(settings.database_url)
         self.event_bus.on("*", self.db.record_event)
+
+        # One Orchestrator per (asset, timeframe), lazily created and reused
+        # across cycles so /analyze and the live-suggestions loop share a
+        # single pipeline implementation instead of two independent copies.
+        self.orchestrators: dict[tuple[str, str], Orchestrator] = {}
 
         # Wire event bus * publisher listener to broadcast to WebSocket clients
         async def broadcast_event(event_dict: dict):
@@ -146,180 +138,71 @@ def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Ke
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
-async def run_consensus_cycle(asset: str, timeframe: str, candle_limit: int, execute_if_signal: bool) -> dict:
-    from core.agents.base_agent import MarketContext, OrderBook, OrderBookLevel
-    request_id = str(uuid.uuid4())
-    t0 = time.perf_counter()
-    try:
-        if state.mock_mode:
-            candles = await state.market_data.get_candles(asset, timeframe, candle_limit)
-            current_price = candles[-1].close
-            order_book = await state.market_data.get_order_book(asset)
-            headlines = ["Bitcoin institutional inflows continue", "Regulatory hurdles clear for Ethereum layer 2s"]
-            sentiment_raw = {"reddit": {"mention_count": 10, "avg_score": 100, "titles": ["Bullish on BTC"]}, "timestamp": time.time()}
-            macro_ctx = {"vix": 18.5, "sp500_1d_change_pct": 0.3, "near_fed_event": False, "days_to_earnings": 30}
-        else:
-            candles, current_price = await asyncio.gather(
-                state.market_data.get_candles(asset, timeframe, candle_limit),
-                state.market_data.get_current_price(asset),
-            )
-
-            try:
-                order_book = await state.market_data.get_order_book(asset)
-            except Exception:
-                bids = [OrderBookLevel(price=current_price * (1 - 0.0001 * (i + 1)), size=1.0) for i in range(20)]
-                asks = [OrderBookLevel(price=current_price * (1 + 0.0001 * (i + 1)), size=1.0) for i in range(20)]
-                order_book = OrderBook(bids=bids, asks=asks, timestamp=time.time())
-
-        # 1. Emit BarClosed to event bus
-        await state.event_bus.publish("BarClosed", request_id, {
-            "asset": asset,
-            "bar": {
-                "timestamp": time.time(),
-                "open": current_price,
-                "high": current_price,
-                "low": current_price,
-                "close": current_price,
-                "volume": 1.0
-            }
-        })
-
-        if not state.mock_mode:
-            headlines, sentiment_raw, macro_ctx = await asyncio.gather(
-                state.news_feed.get_news_headlines(asset),
-                state.news_feed.get_social_sentiment(asset),
-                state.news_feed.get_macro_context(),
-            )
-
-        regime = detect_regime(candles, vix=macro_ctx.get("vix", 20))
-        # 2. Emit RegimeUpdated
-        await state.event_bus.publish("RegimeUpdated", request_id, {"regime": regime})
-
-        # 3. Strategy selection
-        strategy, reason, hurst, vol_pct = state.strategy_selector.select(MarketContext(
-            asset=asset, timeframe=timeframe, candles=candles, current_price=current_price, regime=regime
-        ))
-        
-        # Override if pinned
-        if state.pinned_strategy:
-            from core.strategy.strategies import STRATEGY_REGISTRY
-            from core.strategy.strategy_base import StrategyType
-            strategy = STRATEGY_REGISTRY.get(StrategyType(state.pinned_strategy), strategy)
-            reason = "User pinned override"
-
-        await state.event_bus.publish("StrategySelected", request_id, {
-            "strategy": strategy.strategy_type.value,
-            "reason": reason,
-            "hurst": hurst,
-            "vol_percentile": vol_pct
-        })
-
-        hypothesis = state.strategy_selector.emit_hypothesis(strategy, MarketContext(
-            asset=asset, timeframe=timeframe, candles=candles, current_price=current_price, regime=regime
-        ), hurst, vol_pct)
-        await state.event_bus.publish("HypothesisEmitted", request_id, hypothesis.__dict__ if hasattr(hypothesis, "__dict__") else hypothesis)
-
-        ctx = MarketContext(
+def _get_or_create_orchestrator(asset: str, timeframe: str, candle_limit: int) -> Orchestrator:
+    """
+    One Orchestrator per (asset, timeframe), reused across calls so /analyze
+    and live_suggestions_loop run the exact same pipeline implementation
+    (agents, strategy selection, risk gating, execution) rather than two
+    independently-maintained copies that can silently drift apart.
+    """
+    key = (asset, timeframe)
+    orch = state.orchestrators.get(key)
+    if orch is None:
+        orch = Orchestrator(
             asset=asset,
             timeframe=timeframe,
-            candles=candles,
-            current_price=current_price,
-            order_book=order_book,
-            news_headlines=headlines,
-            sentiment_raw=sentiment_raw,
-            macro_context=macro_ctx,
-            portfolio_context={"active_strategy": strategy.strategy_type.value, "consecutive_losses": state.portfolio.consecutive_losses},
-            regime=regime,
-            request_id=request_id,
-            hypothesis=hypothesis
+            data_provider=state.market_data,
+            news_feed=state.news_feed,
+            portfolio=state.portfolio,
+            router=state.router,
+            alerts=state.alerts,
+            journal=state.journal,
+            weights_manager=state.weights_manager,
+            candle_limit=candle_limit,
+            cycle_interval_sec=settings.live_suggestions_interval_sec,
+            event_bus=state.event_bus,
+            repository=state.db,
         )
+        state.orchestrators[key] = orch
+    orch._candle_limit = candle_limit
+    return orch
 
-        # 4. Agent parallel analysis
-        agent_decisions = await asyncio.gather(
-            state.technical.analyze(ctx),
-            state.sentiment.analyze(ctx),
-            state.quant.analyze(ctx),
-            state.order_flow.analyze(ctx),
-        )
-        
-        # Emit ScreeningResult for each voting agent
-        for d in agent_decisions:
-            await state.event_bus.publish("ScreeningResult", request_id, d.to_dict())
 
-        da_decision = await state.da.analyze(ctx)
-        # Emit ScreeningResult for DA
-        await state.event_bus.publish("ScreeningResult", request_id, da_decision.to_dict())
+async def run_consensus_cycle(asset: str, timeframe: str, candle_limit: int, execute_if_signal: bool) -> dict:
+    orch = _get_or_create_orchestrator(asset, timeframe, candle_limit)
+    orch._auto_execute = execute_if_signal
+    orch._strategy_override = state.pinned_strategy
 
-        # 5. Await evaluate with event_bus
-        signal = await state.meta.evaluate(
-            asset=asset,
-            request_id=request_id,
-            regime=regime,
-            decisions=list(agent_decisions),
-            da_decision=da_decision,
-            hypothesis=hypothesis,
-            event_bus=state.event_bus
-        )
+    result = await orch.run_cycle()
+    if result.error:
+        return {"error": result.error, "asset": asset, "request_id": result.request_id}
 
-        await state.event_bus.publish("VerdictReached", request_id, signal.to_dict())
+    signal = result.signal
+    signal_dict = signal.to_dict()
+    signal_dict["current_price"] = result.current_price
+    signal_dict["executed"] = result.executed
 
-        risk_result = state.risk.check(signal, state.portfolio, current_price)
-        
-        await state.event_bus.publish("SanitizationApplied", request_id, {
-            "status": risk_result.status.value,
-            "approved_size_pct": risk_result.approved_position_size_pct,
-            "stop_loss_price": risk_result.stop_loss_price,
-            "take_profit_price": risk_result.take_profit_price,
-            "sanitization_diff": risk_result.sanitization_diff
-        })
-
-        signal_dict = signal.to_dict()
-        signal_dict["current_price"] = current_price
+    rr = result.risk_result
+    if rr is not None:
         signal_dict["risk_check"] = {
-            "status": risk_result.status.value,
-            "approved_size_pct": risk_result.approved_position_size_pct,
-            "approved_size_usd": risk_result.approved_position_size_usd,
-            "stop_loss_price": risk_result.stop_loss_price,
-            "take_profit_price": risk_result.take_profit_price,
-            "size_usd": risk_result.approved_position_size_usd,
-            "sl_price": risk_result.stop_loss_price,
-            "tp_price": risk_result.take_profit_price,
-            "rejections": risk_result.rejection_reasons,
-            "warnings": risk_result.warnings,
+            "status": rr.status.value,
+            "approved_size_pct": rr.approved_position_size_pct,
+            "approved_size_usd": rr.approved_position_size_usd,
+            "stop_loss_price": rr.stop_loss_price,
+            "take_profit_price": rr.take_profit_price,
+            "size_usd": rr.approved_position_size_usd,
+            "sl_price": rr.stop_loss_price,
+            "tp_price": rr.take_profit_price,
+            "rejections": rr.rejection_reasons,
+            "warnings": rr.warnings,
         }
 
-        if execute_if_signal and signal.final_decision and risk_result.is_tradeable():
-            asyncio.create_task(_execute_trade(signal, risk_result, current_price))
-            await state.event_bus.publish("OrderPlaced", request_id, {
-                "asset": asset,
-                "side": signal.action.value if signal.action else "HOLD",
-                "size_usd": risk_result.approved_position_size_usd,
-                "price": current_price
-            })
+    try:
+        trading_metrics.update_cycle(asset, result.cycle_ms, signal_dict)
+    except Exception:
+        log.exception("Failed to update metrics for %s", asset)
 
-        await state.event_bus.publish("FinalCall", request_id, signal.to_dict())
-
-        cycle_ms = (time.perf_counter() - t0) * 1000
-
-        async def run_bg_task(func, *args):
-            try:
-                if asyncio.iscoroutinefunction(func):
-                    await func(*args)
-                else:
-                    func(*args)
-            except Exception:
-                log.exception("Background task %s failed for %s", getattr(func, "__name__", func), asset)
-
-        asyncio.create_task(run_bg_task(trading_metrics.update_cycle, asset, cycle_ms, signal_dict))
-        asyncio.create_task(run_bg_task(state.journal.log_signal, signal, current_price))
-        asyncio.create_task(run_bg_task(state.alerts.signal_generated, signal))
-        asyncio.create_task(run_bg_task(state.db.record_signal, signal, timeframe, strategy.strategy_type.value))
-        asyncio.create_task(run_bg_task(state.db.snapshot_portfolio, state.portfolio))
-
-        return signal_dict
-    except Exception as e:
-        log.exception("Consensus cycle failed for %s", asset)
-        return {"error": str(e), "asset": asset, "request_id": request_id}
+    return signal_dict
 
 
 async def live_suggestions_loop():
@@ -646,20 +529,3 @@ async def ws_signals(websocket: WebSocket):
             state._ws_clients.remove(websocket)
 
 
-# ── Background helpers ────────────────────────────────────────────────────────
-
-async def _execute_trade(signal: TradeSignal, risk_result, current_price: float):
-    bracket = await state.router.execute_bracket(signal, risk_result, current_price)
-    state.portfolio.open_trades += 1
-
-
-async def _broadcast_ws(data: dict):
-    import json
-    dead = []
-    for ws in state._ws_clients:
-        try:
-            await ws.send_json(data)
-        except Exception:
-            dead.append(ws)
-    for ws in dead:
-        state._ws_clients.remove(ws)
