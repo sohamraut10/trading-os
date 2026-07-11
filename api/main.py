@@ -9,7 +9,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, Response
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, Response, Depends, Header
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -128,6 +128,16 @@ class AppState:
 
 
 state = AppState()
+
+
+def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
+    """
+    Gate for state-changing endpoints (trade submission, portfolio mutation,
+    strategy overrides). No-op when api_auth_token is unset, so local/dev use
+    is unaffected until an operator opts in by setting the token.
+    """
+    if settings.api_auth_token and x_api_key != settings.api_auth_token:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
 async def run_consensus_cycle(asset: str, timeframe: str, candle_limit: int, execute_if_signal: bool) -> dict:
@@ -332,7 +342,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in settings.cors_allowed_origins.split(",") if o.strip()],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -426,11 +436,14 @@ async def prometheus_metrics():
 
 
 @app.post("/analyze")
-async def analyze(req: AnalyzeRequest) -> dict:
+async def analyze(req: AnalyzeRequest, x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> dict:
     """
     Core endpoint: run full multi-agent consensus pipeline on a given asset.
     Returns the complete TradeSignal including per-agent decisions and explainability.
+    Requires the API key when execute_if_signal=True, since that path can place real orders.
     """
+    if req.execute_if_signal:
+        require_api_key(x_api_key)
     return await run_consensus_cycle(req.asset, req.timeframe, req.candle_limit, req.execute_if_signal)
 
 
@@ -484,7 +497,7 @@ async def agent_performance() -> dict:
 
 
 @app.post("/portfolio/reset")
-async def reset_portfolio() -> dict:
+async def reset_portfolio(_: None = Depends(require_api_key)) -> dict:
     if settings.alpaca_api_key:
         state.broker = AlpacaBroker(
             api_key=settings.alpaca_api_key,
@@ -501,7 +514,7 @@ async def reset_portfolio() -> dict:
 
 
 @app.post("/trade/submit")
-async def submit_trade(req: TradeRequest):
+async def submit_trade(req: TradeRequest, _: None = Depends(require_api_key)):
     from core.execution.broker_interface import Order, OrderType
     price = await state.market_data.get_current_price(req.asset)
 
@@ -534,7 +547,7 @@ async def submit_trade(req: TradeRequest):
 
 
 @app.post("/portfolio/close")
-async def close_position(req: ClosePositionRequest):
+async def close_position(req: ClosePositionRequest, _: None = Depends(require_api_key)):
     positions = await state.broker.get_positions()
     if req.asset not in positions:
         raise HTTPException(status_code=400, detail="No position in this asset")
@@ -563,7 +576,7 @@ class StrategySelectRequest(BaseModel):
     strategy: str | None
 
 @app.post("/strategy/select")
-async def post_strategy_select(req: StrategySelectRequest):
+async def post_strategy_select(req: StrategySelectRequest, _: None = Depends(require_api_key)):
     state.pinned_strategy = req.strategy
     return {"status": "success", "pinned_strategy": req.strategy}
 
