@@ -177,6 +177,18 @@ class Orchestrator:
                 self._data.get_current_price(self.asset),
             )
 
+            # Emit BarClosed — the dashboard's event reducer seeds a new
+            # cycle's `asset` field from whichever event arrives first for
+            # that cycle_id, and this is the only event carrying it.
+            await self._bus.publish("BarClosed", request_id, {
+                "asset": self.asset,
+                "bar": {
+                    "timestamp": time.time(),
+                    "open": price, "high": price, "low": price, "close": price,
+                    "volume": 1.0,
+                },
+            })
+
             async def _order_book_or_synthetic():
                 try:
                     return await self._data.get_order_book(self.asset)
@@ -203,6 +215,9 @@ class Orchestrator:
                 regime = regime_consensus(regimes)
             except Exception:
                 regime = detect_regime(candles, vix=macro.get("vix", 20))
+
+            # Emit RegimeUpdated
+            await self._bus.publish("RegimeUpdated", request_id, {"regime": regime})
 
             # ── 3. Strategy selection ─────────────────────────────────────────
             # Use local strategy selector instead of legacy select_strategy
