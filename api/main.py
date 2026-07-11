@@ -36,6 +36,30 @@ log = logging.getLogger("trading_os.api")
 
 # ── Application State ─────────────────────────────────────────────────────────
 
+def _build_broker():
+    """
+    Real broker credentials are opt-in and best-effort: any failure to
+    construct AlpacaBroker (missing alpaca-trade-api, bad config) falls back
+    to PaperBroker with a warning rather than taking down the whole app at
+    boot — this is exactly the failure mode that happens if ALPACA_API_KEY
+    gets set without alpaca-trade-api installed.
+    """
+    alpaca_configured = (
+        settings.alpaca_api_key and
+        not settings.alpaca_api_key.startswith("your_")
+    )
+    if alpaca_configured:
+        try:
+            return AlpacaBroker(
+                api_key=settings.alpaca_api_key,
+                secret_key=settings.alpaca_secret_key,
+                base_url=settings.alpaca_base_url,
+            )
+        except Exception:
+            log.exception("Failed to initialize AlpacaBroker — falling back to PaperBroker")
+    return PaperBroker()
+
+
 class AppState:
     def __init__(self):
         self.risk = RiskEngine()
@@ -53,18 +77,7 @@ class AppState:
             news_api_key=settings.news_api_key,
             redis_url=settings.redis_url,
         )
-        alpaca_configured = (
-            settings.alpaca_api_key and
-            not settings.alpaca_api_key.startswith("your_")
-        )
-        if alpaca_configured:
-            self.broker = AlpacaBroker(
-                api_key=settings.alpaca_api_key,
-                secret_key=settings.alpaca_secret_key,
-                base_url=settings.alpaca_base_url,
-            )
-        else:
-            self.broker = PaperBroker()
+        self.broker = _build_broker()
         self.router = SmartOrderRouter(self.broker, slippage_tolerance_bps=settings.slippage_tolerance_bps)
         self.journal = TradeJournal(
             api_key=settings.anthropic_api_key,
@@ -453,19 +466,11 @@ async def agent_performance() -> dict:
 
 @router.post("/portfolio/reset")
 async def reset_portfolio(_: None = Depends(require_api_key)) -> dict:
-    if settings.alpaca_api_key:
-        state.broker = AlpacaBroker(
-            api_key=settings.alpaca_api_key,
-            secret_key=settings.alpaca_secret_key,
-            base_url=settings.alpaca_base_url,
-        )
-        state.router = SmartOrderRouter(state.broker, slippage_tolerance_bps=settings.slippage_tolerance_bps)
-        account = await state.broker.get_account()
-        return {"status": "reconnected", "initial_equity": account["equity"]}
-    else:
-        state.broker = PaperBroker()
-        state.router = SmartOrderRouter(state.broker, slippage_tolerance_bps=settings.slippage_tolerance_bps)
-        return {"status": "reset", "initial_equity": 100_000.0}
+    state.broker = _build_broker()
+    state.router = SmartOrderRouter(state.broker, slippage_tolerance_bps=settings.slippage_tolerance_bps)
+    account = await state.broker.get_account()
+    status = "reconnected" if isinstance(state.broker, AlpacaBroker) else "reset"
+    return {"status": status, "initial_equity": account["equity"]}
 
 
 @router.post("/trade/submit")

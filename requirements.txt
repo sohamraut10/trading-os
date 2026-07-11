@@ -7,6 +7,14 @@ scipy>=1.13.0
 aiohttp>=3.9.0
 anthropic>=0.28.0
 google-genai>=1.0.0
+# alpaca-trade-api is intentionally NOT a hard dependency: its latest release
+# (3.2.0, effectively abandoned in favor of Alpaca's alpaca-py SDK) pins
+# websockets<11, which directly conflicts with google-genai's websockets>=13
+# requirement above — installing both is impossible. AlpacaBroker already
+# degrades to PaperBroker if alpaca_trade_api isn't importable (see
+# core/execution/broker_interface.py); if you need real Alpaca execution,
+# install alpaca-trade-api in a separate environment without google-genai,
+# or migrate core/execution/broker_interface.py to alpaca-py.
 redis[asyncio]>=5.0.0
 asyncpg>=0.29.0
 sqlalchemy[asyncio]>=2.0.0

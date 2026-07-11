@@ -15,6 +15,12 @@ from core.agents.base_agent import Signal
 from core.agents.meta_agent import TradeSignal
 from core.risk.risk_engine import RiskCheckResult
 
+try:
+    import alpaca_trade_api as _alpaca_trade_api
+    _ALPACA_AVAILABLE = True
+except ImportError:
+    _ALPACA_AVAILABLE = False
+
 
 class OrderType(str, Enum):
     MARKET = "market"
@@ -94,8 +100,12 @@ class AlpacaBroker(BrokerAdapter):
     """Alpaca paper/live trading adapter."""
 
     def __init__(self, api_key: str, secret_key: str, base_url: str):
-        import alpaca_trade_api as tradeapi
-        self._api = tradeapi.REST(api_key, secret_key, base_url)
+        if not _ALPACA_AVAILABLE:
+            raise RuntimeError(
+                "alpaca-trade-api is not installed — add it to requirements.txt "
+                "or unset ALPACA_API_KEY to use PaperBroker instead."
+            )
+        self._api = _alpaca_trade_api.REST(api_key, secret_key, base_url)
 
     async def submit_order(self, order: Order) -> Order:
         loop = asyncio.get_event_loop()

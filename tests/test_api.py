@@ -18,7 +18,8 @@ settings.api_auth_token = "test-secret"
 settings.enable_live_suggestions = False
 settings.database_url = "postgresql+asyncpg://nouser:nopass@localhost:1/nodb"
 
-from api.main import app, state  # noqa: E402  (must follow the settings overrides above)
+from api.main import app, state, _build_broker  # noqa: E402  (must follow the settings overrides above)
+from core.execution.broker_interface import PaperBroker
 
 
 def test_health_ok():
@@ -116,3 +117,30 @@ def test_cors_allows_configured_origin_only():
             headers={"Origin": "http://evil.example", "Access-Control-Request-Method": "POST"},
         )
         assert "access-control-allow-origin" not in disallowed.headers
+
+
+def test_build_broker_falls_back_to_paper_broker_without_alpaca_key():
+    original = settings.alpaca_api_key
+    settings.alpaca_api_key = ""
+    try:
+        assert isinstance(_build_broker(), PaperBroker)
+    finally:
+        settings.alpaca_api_key = original
+
+
+def test_build_broker_falls_back_to_paper_broker_when_alpaca_construction_fails():
+    # Reproduces the real-world crash this guards against: a real-looking
+    # ALPACA_API_KEY set in an environment without alpaca-trade-api
+    # installed must not take the whole app down at boot. Patches
+    # _ALPACA_AVAILABLE explicitly so this doesn't depend on whether
+    # alpaca-trade-api happens to be installed in whatever environment
+    # runs this test.
+    from unittest.mock import patch
+    original_key = settings.alpaca_api_key
+    settings.alpaca_api_key = "PKREALLOOKINGKEY123"
+    try:
+        with patch("core.execution.broker_interface._ALPACA_AVAILABLE", False):
+            broker = _build_broker()
+        assert isinstance(broker, PaperBroker)
+    finally:
+        settings.alpaca_api_key = original_key
