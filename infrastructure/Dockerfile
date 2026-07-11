@@ -1,3 +1,13 @@
+# Build the dashboard first so a single-container deploy (Render, Fly.io,
+# plain Docker) serves a real built SPA at / instead of the raw unbuilt
+# dashboard/index.html (unprocessed module imports, no Vite transform).
+FROM node:22-slim AS dashboard-build
+WORKDIR /dashboard
+COPY dashboard/package*.json ./
+RUN npm ci
+COPY dashboard/ ./
+RUN npm run build
+
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -10,6 +20,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+COPY --from=dashboard-build /dashboard/dist ./dashboard/dist
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1

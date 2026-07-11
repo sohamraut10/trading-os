@@ -223,6 +223,39 @@ does **not** use `app.mount()`, because Starlette's `Mount` doesn't forward
 ASGI lifespan events to a mounted sub-app, which would silently skip
 `state.db.connect()` (and the portfolio resume) entirely.
 
+### Deploy to Render or Fly.io (alternative to Vercel)
+
+Both run the existing Docker image as a real long-lived container instead
+of serverless functions, so **none of the Vercel workarounds above are
+needed** — `live_suggestions_loop`, the `/ws/*` WebSocket endpoints, and
+in-memory `AppState` all work exactly as designed, no code changes required.
+`infrastructure/Dockerfile` is now a multi-stage build: it builds the
+dashboard first and copies the compiled assets in, so a single container
+serves both the API and a real built dashboard at `/` (previously the
+Dockerfile only copied source and never ran `npm run build`, so `/` would
+have served the raw, unprocessed `dashboard/index.html`).
+
+**Render**: `render.yaml` is a Blueprint — connect the repo in the Render
+dashboard and it provisions a Postgres instance plus the web service from
+`infrastructure/Dockerfile` automatically. Set the `sync: false` env vars
+(`API_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, etc.) in the dashboard after first
+deploy.
+
+**Fly.io**:
+```bash
+fly apps create trading-os
+fly postgres create --name trading-os-db
+fly postgres attach trading-os-db      # sets DATABASE_URL automatically
+fly secrets set API_AUTH_TOKEN=... ANTHROPIC_API_KEY=...
+fly deploy
+```
+
+Both configs pin to a single instance/machine — `AppState` (portfolio,
+event log, websocket clients) is process-local, same reason
+`infrastructure/Dockerfile`'s `CMD` uses `--workers 1`. Redis/Kafka stay
+optional on either platform; both already degrade to in-memory
+implementations when unconfigured.
+
 ---
 
 ## Repository
