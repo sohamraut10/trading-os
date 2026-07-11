@@ -120,7 +120,13 @@ class Orchestrator:
 
         # Agent instances — reused across cycles
         self._tech = TechnicalAnalystAgent()
-        self._sent = SentimentAgent(api_key=settings.anthropic_api_key)
+        self._sent = SentimentAgent(
+            api_key=settings.anthropic_api_key,
+            model=settings.anthropic_model,
+            gemini_api_key=settings.gemini_api_key,
+            gemini_model=settings.gemini_model,
+            provider=settings.llm_provider,
+        )
         self._quant = QuantAgent()
         self._of = OrderFlowAgent()
         self._da = DevilsAdvocateAgent()

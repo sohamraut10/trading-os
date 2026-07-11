@@ -1,6 +1,6 @@
 """
 AI Trade Journal
-Generates human-readable post-trade analysis using Claude.
+Generates human-readable post-trade analysis using an LLM (Claude or Gemini).
 Logs every signal decision for full auditability.
 """
 import json
@@ -8,13 +8,8 @@ import time
 from pathlib import Path
 from dataclasses import dataclass, field
 
-try:
-    import anthropic
-    _AVAILABLE = True
-except ImportError:
-    _AVAILABLE = False
-
 from core.agents.meta_agent import TradeSignal
+from core.llm import build_llm_client
 
 
 @dataclass
@@ -52,9 +47,17 @@ class TradeJournal:
         api_key: str = "",
         journal_path: str = "trade_journal.jsonl",
         model: str = "claude-haiku-4-5-20251001",
+        gemini_api_key: str = "",
+        gemini_model: str = "gemini-2.5-flash",
+        provider: str = "auto",
     ):
-        self._client = anthropic.Anthropic(api_key=api_key) if _AVAILABLE and api_key else None
-        self._model = model
+        self._client = build_llm_client(
+            provider=provider,
+            anthropic_api_key=api_key,
+            gemini_api_key=gemini_api_key,
+            anthropic_model=model,
+            gemini_model=gemini_model,
+        )
         self._path = Path(journal_path)
 
     async def log_signal(
@@ -91,23 +94,12 @@ class TradeJournal:
     async def _generate_analysis(self, entry: TradeJournalEntry) -> str:
         if not self._client:
             return ""
-        import asyncio
-        loop = asyncio.get_event_loop()
         try:
-            response = await loop.run_in_executor(
-                None,
-                lambda: self._client.messages.create(
-                    model=self._model,
-                    max_tokens=400,
-                    messages=[{
-                        "role": "user",
-                        "content": JOURNAL_PROMPT.format(
-                            trade_json=json.dumps(entry.signal, indent=2)
-                        ),
-                    }],
-                )
+            return await self._client.generate(
+                system_prompt="",
+                user_content=JOURNAL_PROMPT.format(trade_json=json.dumps(entry.signal, indent=2)),
+                max_tokens=400,
             )
-            return response.content[0].text
         except Exception as e:
             return f"Analysis unavailable: {e}"
 

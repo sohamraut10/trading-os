@@ -1,17 +1,12 @@
 """
 Sentiment & News Agent
-Uses Claude to NLP-analyze headlines and social sentiment into a structured signal.
-Falls back to heuristic keyword scoring if LLM unavailable.
+Uses an LLM (Claude or Gemini) to NLP-analyze headlines and social sentiment
+into a structured signal. Falls back to heuristic keyword scoring if no LLM
+is configured or the call fails.
 """
 import re
-import asyncio
 from .base_agent import BaseAgent, AgentDecision, AgentName, MarketContext, Signal
-
-try:
-    import anthropic
-    _ANTHROPIC_AVAILABLE = True
-except ImportError:
-    _ANTHROPIC_AVAILABLE = False
+from core.llm import build_llm_client
 
 
 SYSTEM_PROMPT = """You are a financial sentiment analyst. Analyze the provided news headlines and
@@ -87,10 +82,21 @@ def _parse_llm_response(raw: str) -> dict:
 class SentimentAgent(BaseAgent):
     name = AgentName.SENTIMENT
 
-    def __init__(self, api_key: str = "", model: str = "claude-haiku-4-5-20251001"):
-        self._model = model
-        has_real_key = api_key and not api_key.startswith("your_") and len(api_key) > 10
-        self._client = anthropic.Anthropic(api_key=api_key) if _ANTHROPIC_AVAILABLE and has_real_key else None
+    def __init__(
+        self,
+        api_key: str = "",
+        model: str = "claude-haiku-4-5-20251001",
+        gemini_api_key: str = "",
+        gemini_model: str = "gemini-2.5-flash",
+        provider: str = "auto",
+    ):
+        self._client = build_llm_client(
+            provider=provider,
+            anthropic_api_key=api_key,
+            gemini_api_key=gemini_api_key,
+            anthropic_model=model,
+            gemini_model=gemini_model,
+        )
 
     async def _analyze(self, ctx: MarketContext) -> AgentDecision:
         headlines = ctx.news_headlines
@@ -123,19 +129,13 @@ Social Sentiment Data:
 {sentiment_raw}
 """
         try:
-            # Run sync client in thread to avoid blocking event loop
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self._client.messages.create(
-                    model=self._model,
-                    max_tokens=512,
-                    system=SYSTEM_PROMPT.format(asset=ctx.asset),
-                    messages=[{"role": "user", "content": user_content}],
-                    temperature=0.1,
-                )
+            raw_text = await self._client.generate(
+                system_prompt=SYSTEM_PROMPT.format(asset=ctx.asset),
+                user_content=user_content,
+                max_tokens=512,
+                temperature=0.1,
             )
-            parsed = _parse_llm_response(response.content[0].text)
+            parsed = _parse_llm_response(raw_text)
 
             signal = Signal(parsed["signal"])
             confidence = float(parsed["confidence"])

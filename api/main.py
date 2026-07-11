@@ -66,7 +66,13 @@ class AppState:
         else:
             self.broker = PaperBroker()
         self.router = SmartOrderRouter(self.broker, slippage_tolerance_bps=settings.slippage_tolerance_bps)
-        self.journal = TradeJournal(api_key=settings.anthropic_api_key)
+        self.journal = TradeJournal(
+            api_key=settings.anthropic_api_key,
+            model=settings.anthropic_model,
+            gemini_api_key=settings.gemini_api_key,
+            gemini_model=settings.gemini_model,
+            provider=settings.llm_provider,
+        )
         self.alerts = AlertRouter()
         self.weights_manager = AdaptiveWeightManager()
 
