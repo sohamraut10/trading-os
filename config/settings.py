@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     slippage_tolerance_bps: float = 5.0    # basis points
     smart_order_min_size_usd: float = 10000.0
 
+    # Background live-suggestions loop (api/main.py)
+    enable_live_suggestions: bool = True
+    live_suggestions_assets: str = "BTCUSDT,ETHUSDT,SOLUSDT,EURUSD,GBPUSD,USDJPY"
+    live_suggestions_interval_sec: float = 15.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_nested_delimiter="__",
