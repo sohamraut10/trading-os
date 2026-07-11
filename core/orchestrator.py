@@ -18,7 +18,7 @@ from core.agents import (
     OrderFlowAgent, DevilsAdvocateAgent, ConsensusEngine,
     MarketContext,
 )
-from core.agents.base_agent import Signal
+from core.agents.base_agent import Signal, OrderBook, OrderBookLevel
 from core.agents.meta_agent import TradeSignal
 from core.data.market_data import MarketDataProvider
 from core.data.news_feed import NewsFeed
@@ -51,6 +51,8 @@ class CycleResult:
     executed: bool = False
     cycle_ms: float = 0.0
     error: str | None = None
+    current_price: float = 0.0
+    risk_result: Any = None
 
     def to_dict(self) -> dict:
         return {
@@ -109,9 +111,12 @@ class Orchestrator:
             self._bus = EventBus(settings.kafka_bootstrap_servers)
         else:
             self._bus = event_bus
+        # Note: this only stores the reference for per-cycle record_signal/
+        # snapshot_portfolio calls. It does NOT register an event-bus hook —
+        # callers sharing one EventBus across multiple Orchestrators (e.g. a
+        # portfolio watchlist) must register that once themselves, or every
+        # instance sharing the bus would double up on event persistence.
         self._repository = repository
-        if self._repository is not None:
-            self._bus.on("*", self._repository.record_event)
 
         # Agent instances — reused across cycles
         self._tech = TechnicalAnalystAgent()
@@ -161,17 +166,24 @@ class Orchestrator:
 
         try:
             # ── 1. Fetch data (parallel) ──────────────────────────────────────
-            (candles, price), (ob, headlines, sentiment, macro) = await asyncio.gather(
-                asyncio.gather(
-                    self._data.get_candles(self.asset, self.timeframe, self._candle_limit),
-                    self._data.get_current_price(self.asset),
-                ),
-                asyncio.gather(
-                    self._data.get_order_book(self.asset),
-                    self._news.get_news_headlines(self.asset),
-                    self._news.get_social_sentiment(self.asset),
-                    self._news.get_macro_context(),
-                )
+            candles, price = await asyncio.gather(
+                self._data.get_candles(self.asset, self.timeframe, self._candle_limit),
+                self._data.get_current_price(self.asset),
+            )
+
+            async def _order_book_or_synthetic():
+                try:
+                    return await self._data.get_order_book(self.asset)
+                except Exception:
+                    bids = [OrderBookLevel(price=price * (1 - 0.0001 * (i + 1)), size=1.0) for i in range(20)]
+                    asks = [OrderBookLevel(price=price * (1 + 0.0001 * (i + 1)), size=1.0) for i in range(20)]
+                    return OrderBook(bids=bids, asks=asks, timestamp=time.time())
+
+            ob, headlines, sentiment, macro = await asyncio.gather(
+                _order_book_or_synthetic(),
+                self._news.get_news_headlines(self.asset),
+                self._news.get_social_sentiment(self.asset),
+                self._news.get_macro_context(),
             )
 
             # ── 2. Multi-timeframe regime ──────────────────────────────────────
@@ -264,11 +276,12 @@ class Orchestrator:
             strat_ok, strat_reason = strategy.accepts(signal, ctx)
 
             # ── 8. Risk check ─────────────────────────────────────────────────
+            # Always computed (even for HOLD/rejected signals) so callers can see
+            # what would have happened; execution itself stays gated below.
             executed = False
-            risk_result = None
+            risk_result = self._risk.check(signal, self._portfolio, price)
+
             if signal.final_decision and strat_ok:
-                risk_result = self._risk.check(signal, self._portfolio, price)
-                
                 # Emit SanitizationApplied
                 await self._bus.publish("SanitizationApplied", request_id, {
                     "status": risk_result.status.value,
@@ -329,6 +342,8 @@ class Orchestrator:
                 strategy_reason=strat_reason,
                 executed=executed,
                 cycle_ms=cycle_ms,
+                current_price=price,
+                risk_result=risk_result,
             )
             self._append_history(result)
             return result
