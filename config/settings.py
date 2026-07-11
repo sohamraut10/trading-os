@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     # API Keys
     anthropic_api_key: str = ""
     openai_api_key: str = ""
+    gemini_api_key: str = ""
     alpaca_api_key: str = ""
     alpaca_secret_key: str = ""
     alpaca_base_url: str = "https://paper-api.alpaca.markets"
@@ -76,6 +77,12 @@ class Settings(BaseSettings):
     fallback_llm_model: str = "claude-haiku-4-5-20251001"
     llm_max_tokens: int = 2048
     llm_temperature: float = 0.1           # low = deterministic analysis
+
+    # "anthropic" | "gemini" | "auto" — auto prefers Anthropic if configured,
+    # else falls back to Gemini. Used by SentimentAgent and TradeJournal.
+    llm_provider: Literal["anthropic", "gemini", "auto"] = "auto"
+    anthropic_model: str = "claude-haiku-4-5-20251001"
+    gemini_model: str = "gemini-2.5-flash"
 
     # Execution
     slippage_tolerance_bps: float = 5.0    # basis points
