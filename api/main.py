@@ -4,6 +4,7 @@ Exposes REST endpoints for signal generation, backtesting, portfolio status, and
 WebSocket endpoint streams live signal decisions.
 """
 import asyncio
+import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -33,6 +34,9 @@ from core.monitoring.metrics import metrics as trading_metrics
 from core.learning.adaptive_weights import AdaptiveWeightManager
 from core.streaming.event_bus import EventBus
 from core.strategy.selector import StrategySelector
+from core.persistence.repository import Repository
+
+log = logging.getLogger("trading_os.api")
 
 
 # ── Application State ─────────────────────────────────────────────────────────
@@ -97,6 +101,8 @@ class AppState:
         self.strategy_selector = StrategySelector()
         self.pinned_strategy: str | None = None
         self._ws_events_clients: list[WebSocket] = []
+        self.db = Repository(settings.database_url)
+        self.event_bus.on("*", self.db.record_event)
 
         # Wire event bus * publisher listener to broadcast to WebSocket clients
         async def broadcast_event(event_dict: dict):
@@ -302,35 +308,42 @@ async def run_consensus_cycle(asset: str, timeframe: str, candle_limit: int, exe
                 else:
                     func(*args)
             except Exception:
-                pass
+                log.exception("Background task %s failed for %s", getattr(func, "__name__", func), asset)
 
         asyncio.create_task(run_bg_task(trading_metrics.update_cycle, asset, cycle_ms, signal_dict))
         asyncio.create_task(run_bg_task(state.journal.log_signal, signal, current_price))
         asyncio.create_task(run_bg_task(state.alerts.signal_generated, signal))
+        asyncio.create_task(run_bg_task(state.db.record_signal, signal, timeframe, strategy.strategy_type.value))
+        asyncio.create_task(run_bg_task(state.db.snapshot_portfolio, state.portfolio))
 
         return signal_dict
     except Exception as e:
-        print(f"Error in consensus cycle for {asset}: {e}")
-        return {}
+        log.exception("Consensus cycle failed for %s", asset)
+        return {"error": str(e), "asset": asset, "request_id": request_id}
 
 
 async def live_suggestions_loop():
-    # Loop indefinitely through major Forex and Crypto assets to push live suggestions to the websocket
-    assets = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "EURUSD", "GBPUSD", "USDJPY"]
+    """Loop indefinitely through the configured watchlist, pushing live suggestions to the websocket."""
+    if not settings.enable_live_suggestions:
+        log.info("Live suggestions loop disabled via settings.enable_live_suggestions")
+        return
+    assets = [a.strip() for a in settings.live_suggestions_assets.split(",") if a.strip()]
     while True:
         for asset in assets:
             await run_consensus_cycle(asset, timeframe="1h", candle_limit=300, execute_if_signal=False)
-            await asyncio.sleep(15)
+            await asyncio.sleep(settings.live_suggestions_interval_sec)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await state.news_feed.setup()
+    await state.db.connect()
     loop_task = asyncio.create_task(live_suggestions_loop())
     try:
         yield
     finally:
         loop_task.cancel()
+        await state.db.close()
 
 
 app = FastAPI(
@@ -347,11 +360,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize static files directory dynamically
+# Serve the built dashboard's assets if it's been built; skip otherwise
+# rather than creating empty directories in the working tree on every boot.
 import os
-os.makedirs("dashboard/dist/assets", exist_ok=True)
 from fastapi.staticfiles import StaticFiles
-app.mount("/assets", StaticFiles(directory="dashboard/dist/assets"), name="assets")
+_dashboard_assets_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dashboard", "dist", "assets")
+if os.path.isdir(_dashboard_assets_dir):
+    app.mount("/assets", StaticFiles(directory=_dashboard_assets_dir), name="assets")
+else:
+    log.info("Dashboard build not found at %s — skipping /assets mount", _dashboard_assets_dir)
 
 
 # ── Request / Response Models ─────────────────────────────────────────────────
@@ -533,6 +550,7 @@ async def submit_trade(req: TradeRequest, _: None = Depends(require_api_key)):
     )
     filled_order = await state.broker.submit_order(order)
     state.portfolio.open_trades += 1
+    asyncio.create_task(state.db.snapshot_portfolio(state.portfolio))
     return {
         "status": filled_order.status.value,
         "avg_fill_price": filled_order.avg_fill_price,
@@ -564,6 +582,7 @@ async def close_position(req: ClosePositionRequest, _: None = Depends(require_ap
     )
     filled_order = await state.broker.submit_order(order)
     state.portfolio.open_trades = max(0, state.portfolio.open_trades - 1)
+    asyncio.create_task(state.db.snapshot_portfolio(state.portfolio))
     return {
         "status": "closed",
         "asset": req.asset,
