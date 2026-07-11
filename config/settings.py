@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     debug: bool = False
     log_level: str = "INFO"
 
+    # Auth — set api_auth_token to require it on state-changing endpoints
+    # (trade submit/close/reset, strategy pin, manual analyze-with-execute)
+    api_auth_token: str = ""
+    cors_allowed_origins: str = "http://localhost:5173,http://localhost:8000,http://localhost:3000"
+
     # API Keys
     anthropic_api_key: str = ""
     openai_api_key: str = ""
