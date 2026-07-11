@@ -124,3 +124,55 @@ async def test_snapshot_portfolio_persists(repo):
     async with repo._pool.acquire() as conn:
         after = await conn.fetchval("SELECT COUNT(*) FROM portfolio_snapshots")
     assert after == before + 1
+
+
+async def test_load_latest_portfolio_snapshot_returns_most_recent(repo):
+    await repo.snapshot_portfolio(_portfolio(equity=100_000.0))
+    await repo.snapshot_portfolio(_portfolio(equity=222_222.0, cash=210_000.0, open_trades=4))
+
+    latest = await repo.load_latest_portfolio_snapshot()
+    assert latest is not None
+    assert float(latest["equity"]) == 222_222.0
+    assert float(latest["cash"]) == 210_000.0
+    assert int(latest["open_trades"]) == 4
+
+
+async def test_load_latest_portfolio_snapshot_none_when_empty(repo):
+    async with repo._pool.acquire() as conn:
+        await conn.execute("TRUNCATE portfolio_snapshots")
+    latest = await repo.load_latest_portfolio_snapshot()
+    assert latest is None
+
+
+async def test_fetch_recent_events_orders_oldest_first_and_respects_limit(repo):
+    ids = [str(uuid.uuid4()) for _ in range(3)]
+    base_ts = time.time()
+    for i, eid in enumerate(ids):
+        await repo.record_event({
+            "event_id": eid, "cycle_id": "cycle-order-test", "ts": base_ts + i,
+            "type": "FinalCall", "payload": {"i": i},
+        })
+
+    events = await repo.fetch_recent_events(limit=1000)
+    matching = [e for e in events if e["cycle_id"] == "cycle-order-test"]
+    assert [e["event_id"] for e in matching] == ids  # oldest first
+
+    async with repo._pool.acquire() as conn:
+        await conn.execute("DELETE FROM events WHERE event_id = ANY($1::uuid[])", ids)
+
+
+async def test_fetch_recent_events_after_cursor_excludes_seen(repo):
+    ids = [str(uuid.uuid4()) for _ in range(3)]
+    base_ts = time.time()
+    for i, eid in enumerate(ids):
+        await repo.record_event({
+            "event_id": eid, "cycle_id": "cycle-cursor-test", "ts": base_ts + i,
+            "type": "FinalCall", "payload": {"i": i},
+        })
+
+    after_first = await repo.fetch_recent_events(after=ids[0], limit=1000)
+    matching = [e for e in after_first if e["cycle_id"] == "cycle-cursor-test"]
+    assert [e["event_id"] for e in matching] == ids[1:]
+
+    async with repo._pool.acquire() as conn:
+        await conn.execute("DELETE FROM events WHERE event_id = ANY($1::uuid[])", ids)

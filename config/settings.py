@@ -82,9 +82,15 @@ class Settings(BaseSettings):
     smart_order_min_size_usd: float = 10000.0
 
     # Background live-suggestions loop (api/main.py)
+    # On serverless (Vercel), there is no persistent process to run this loop
+    # in, so it's replaced by a Vercel Cron hitting POST /cron/tick instead.
     enable_live_suggestions: bool = True
     live_suggestions_assets: str = "BTCUSDT,ETHUSDT,SOLUSDT,EURUSD,GBPUSD,USDJPY"
     live_suggestions_interval_sec: float = 15.0
+
+    # Shared secret required on the Authorization header of POST /cron/tick.
+    # Empty disables the endpoint entirely (fails closed, unlike api_auth_token).
+    cron_secret: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",
