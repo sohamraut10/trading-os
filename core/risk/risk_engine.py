@@ -169,6 +169,104 @@ class RiskEngine:
             sanitization_diff=sanitization_diff,
         )
 
+    def check_manual_order(
+        self,
+        side: str,
+        quantity: float,
+        current_price: float,
+        portfolio: PortfolioState,
+    ) -> RiskCheckResult:
+        """
+        Same gates as check() (circuit breakers, exposure, open-trade caps) but for a
+        manually-submitted order with an explicit quantity instead of an agent signal.
+        Sizing can only be scaled down to fit within limits, never scaled up.
+        """
+        rejections = []
+        warnings = []
+        sanitization_diff = []
+
+        if portfolio.daily_pnl_pct <= -self.cfg.max_daily_drawdown:
+            rejections.append(
+                f"Daily circuit breaker: drawdown {portfolio.daily_pnl_pct:.2%} "
+                f"exceeds limit {self.cfg.max_daily_drawdown:.2%}"
+            )
+
+        if portfolio.consecutive_losses >= 5:
+            rejections.append(f"Loss streak circuit breaker: {portfolio.consecutive_losses} losses")
+
+        if portfolio.total_exposure_pct >= self.cfg.max_portfolio_exposure:
+            rejections.append(
+                f"Portfolio fully deployed: {portfolio.total_exposure_pct:.2%} "
+                f">= {self.cfg.max_portfolio_exposure:.2%} limit"
+            )
+
+        if portfolio.open_trades >= self.cfg.max_open_trades:
+            rejections.append(f"Max open trades reached: {portfolio.open_trades}/{self.cfg.max_open_trades}")
+
+        if current_price <= 0 or quantity <= 0:
+            rejections.append("Invalid price or quantity")
+
+        if rejections:
+            return RiskCheckResult(
+                status=RiskStatus.REJECTED,
+                approved_position_size_pct=0.0,
+                approved_position_size_usd=0.0,
+                stop_loss_price=0.0,
+                take_profit_price=0.0,
+                rejection_reasons=rejections,
+                warnings=warnings,
+                sanitization_diff=["Rejected by risk engine gates"],
+            )
+
+        desired_usd = quantity * current_price
+        desired_pct = desired_usd / portfolio.equity if portfolio.equity > 0 else 0.0
+        available_pct = self.cfg.max_portfolio_exposure - portfolio.total_exposure_pct
+        approved_pct = min(desired_pct, available_pct, self.cfg.max_position_pct)
+        scaled_down = approved_pct < desired_pct * 0.99
+
+        if approved_pct < 0.002:
+            return RiskCheckResult(
+                status=RiskStatus.REJECTED,
+                approved_position_size_pct=0.0,
+                approved_position_size_usd=0.0,
+                stop_loss_price=0.0,
+                take_profit_price=0.0,
+                rejection_reasons=["Order size too small or exceeds available exposure"],
+                warnings=warnings,
+                sanitization_diff=["Size below minimum trading floor"],
+            )
+
+        if scaled_down:
+            approved_usd = portfolio.equity * approved_pct
+            warnings.append(f"Order scaled from {desired_pct:.2%} to {approved_pct:.2%} of equity")
+            sanitization_diff.append(
+                f"quantity cut to fit exposure limits: ${desired_usd:,.2f} -> ${approved_usd:,.2f}"
+            )
+        else:
+            approved_usd = desired_usd
+
+        sl_pct = self.cfg.max_trade_drawdown
+        tp_pct = sl_pct * self.cfg.default_rr_ratio
+        if side.lower() == "buy":
+            sl_price = current_price * (1 - sl_pct)
+            tp_price = current_price * (1 + tp_pct)
+        else:
+            sl_price = current_price * (1 + sl_pct)
+            tp_price = current_price * (1 - tp_pct)
+
+        status = RiskStatus.SCALED_DOWN if scaled_down else RiskStatus.APPROVED
+
+        return RiskCheckResult(
+            status=status,
+            approved_position_size_pct=approved_pct,
+            approved_position_size_usd=round(approved_usd, 2),
+            stop_loss_price=round(sl_price, 6),
+            take_profit_price=round(tp_price, 6),
+            rejection_reasons=[],
+            warnings=warnings,
+            sanitization_diff=sanitization_diff,
+        )
+
     def compute_portfolio_var(self, portfolio: PortfolioState, confidence: float = 0.95) -> float:
         total_exposure = portfolio.equity * portfolio.total_exposure_pct
         daily_vol = 0.02

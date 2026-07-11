@@ -504,19 +504,32 @@ async def reset_portfolio() -> dict:
 async def submit_trade(req: TradeRequest):
     from core.execution.broker_interface import Order, OrderType
     price = await state.market_data.get_current_price(req.asset)
+
+    risk_result = state.risk.check_manual_order(req.side, req.quantity, price, state.portfolio)
+    if not risk_result.is_tradeable():
+        raise HTTPException(status_code=400, detail={"rejections": risk_result.rejection_reasons})
+
+    approved_qty = risk_result.approved_position_size_usd / price
+
     order = Order(
         asset=req.asset,
         side=req.side.lower(),
-        quantity=req.quantity,
+        quantity=approved_qty,
         order_type=OrderType.MARKET,
         limit_price=price,
     )
     filled_order = await state.broker.submit_order(order)
+    state.portfolio.open_trades += 1
     return {
         "status": filled_order.status.value,
         "avg_fill_price": filled_order.avg_fill_price,
         "quantity": filled_order.filled_qty,
         "side": filled_order.side,
+        "risk_check": {
+            "status": risk_result.status.value,
+            "warnings": risk_result.warnings,
+            "sanitization_diff": risk_result.sanitization_diff,
+        },
     }
 
 
@@ -537,6 +550,7 @@ async def close_position(req: ClosePositionRequest):
         limit_price=price,
     )
     filled_order = await state.broker.submit_order(order)
+    state.portfolio.open_trades = max(0, state.portfolio.open_trades - 1)
     return {
         "status": "closed",
         "asset": req.asset,
