@@ -49,6 +49,18 @@ class OrderBook:
 
 
 @dataclass
+class TradeHypothesis:
+    strategy_name: str
+    direction_bias: Signal                  # BUY, SELL, HOLD
+    entry_zone: tuple[float, float]        # (low, high) price range
+    suggested_sl: float                    # price
+    suggested_tp: float                    # price
+    holding_horizon: str                   # e.g., "10 bars", "50 bars"
+    confirming_evidence: list[str]         # list of strings
+    refuting_evidence: list[str]           # list of strings
+
+
+@dataclass
 class MarketContext:
     """Immutable snapshot of market state passed to every agent."""
     asset: str
@@ -63,6 +75,7 @@ class MarketContext:
     regime: str = "unknown"                # bull / bear / sideways / volatile
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: float = field(default_factory=time.time)
+    hypothesis: TradeHypothesis | None = None
 
 
 @dataclass

@@ -119,7 +119,7 @@ def compute_indicators(candles: list[OHLCV]) -> TechnicalIndicators:
         bb_lower=bb_lower,
         bb_pct_b=pct_b,
         atr_14=_atr(candles),
-        volume_ratio=float(vols[-1] / vols[-20:].mean()) if len(vols) >= 20 else 1.0,
+        volume_ratio=float(vols[-1] / vols[-20:].mean()) if len(vols) >= 20 and vols[-20:].mean() > 0 else 1.0,
     )
 
 

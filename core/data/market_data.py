@@ -93,15 +93,23 @@ class AlpacaProvider(MarketDataProvider):
 
 
 class BinanceProvider(MarketDataProvider):
-    """Binance — crypto spot."""
+    """Binance — crypto spot, falling back to Yahoo Finance for Forex currency pairs."""
 
     BASE = "https://api.binance.com"
+    FOREX_PAIRS = {"EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "EURGBP", "EURJPY"}
 
     def __init__(self, api_key: str = "", secret: str = ""):
         self.api_key = api_key
         self.secret = secret
 
+    def _normalize_symbol(self, symbol: str) -> str:
+        return symbol.replace("/", "").replace("-", "").replace("=", "").upper()
+
     async def get_candles(self, symbol: str, timeframe: str, limit: int = 300) -> list[OHLCV]:
+        symbol = self._normalize_symbol(symbol)
+        if symbol in self.FOREX_PAIRS:
+            return await self._get_yahoo_candles(symbol, timeframe, limit)
+
         import aiohttp
         url = f"{self.BASE}/api/v3/klines"
         params = {"symbol": symbol, "interval": timeframe, "limit": min(limit, 1000)}
@@ -120,6 +128,10 @@ class BinanceProvider(MarketDataProvider):
         ]
 
     async def get_current_price(self, symbol: str) -> float:
+        symbol = self._normalize_symbol(symbol)
+        if symbol in self.FOREX_PAIRS:
+            return await self._get_yahoo_current_price(symbol)
+
         import aiohttp
         async with aiohttp.ClientSession() as session:
             async with session.get(f"{self.BASE}/api/v3/ticker/price", params={"symbol": symbol}) as resp:
@@ -127,6 +139,10 @@ class BinanceProvider(MarketDataProvider):
         return float(data["price"])
 
     async def get_order_book(self, symbol: str, depth: int = 20) -> OrderBook:
+        symbol = self._normalize_symbol(symbol)
+        if symbol in self.FOREX_PAIRS:
+            return await self._get_yahoo_order_book(symbol, depth)
+
         import aiohttp
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -139,6 +155,12 @@ class BinanceProvider(MarketDataProvider):
         return OrderBook(bids=bids, asks=asks, timestamp=time.time())
 
     async def stream_price(self, symbol: str) -> AsyncIterator[float]:
+        symbol = self._normalize_symbol(symbol)
+        if symbol in self.FOREX_PAIRS:
+            while True:
+                yield await self._get_yahoo_current_price(symbol)
+                await asyncio.sleep(1)
+
         import aiohttp
         ws_url = f"wss://stream.binance.com:9443/ws/{symbol.lower()}@trade"
         async with aiohttp.ClientSession() as session:
@@ -148,6 +170,54 @@ class BinanceProvider(MarketDataProvider):
                         import json
                         data = json.loads(msg.data)
                         yield float(data["p"])
+
+    async def _get_yahoo_candles(self, symbol: str, timeframe: str, limit: int) -> list[OHLCV]:
+        import aiohttp
+        tf_map = {"1m": ("1m", "2d"), "5m": ("5m", "5d"), "15m": ("15m", "10d"), "1h": ("1h", "30d"), "1d": ("1d", "365d")}
+        interval, range_val = tf_map.get(timeframe, ("1h", "30d"))
+        
+        yahoo_symbol = f"{symbol}=X"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}"
+        params = {"interval": interval, "range": range_val}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(url, params=params) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                
+        result = data["chart"]["result"][0]
+        timestamps = result.get("timestamp", [])
+        quote = result["indicators"]["quote"][0]
+        
+        candles = []
+        for i in range(len(timestamps)):
+            o = quote["open"][i]
+            h = quote["high"][i]
+            l = quote["low"][i]
+            c = quote["close"][i]
+            v = quote["volume"][i] or 0.0
+            
+            if o is not None and h is not None and l is not None and c is not None:
+                candles.append(OHLCV(
+                    timestamp=float(timestamps[i]),
+                    open=float(o), high=float(h),
+                    low=float(l), close=float(c),
+                    volume=float(v),
+                ))
+        return candles[-limit:]
+
+    async def _get_yahoo_current_price(self, symbol: str) -> float:
+        candles = await self._get_yahoo_candles(symbol, "1m", 1)
+        if candles:
+            return candles[-1].close
+        return 0.0
+
+    async def _get_yahoo_order_book(self, symbol: str, depth: int = 20) -> OrderBook:
+        price = await self._get_yahoo_current_price(symbol)
+        bids = [OrderBookLevel(price=price * (1 - 0.0001 * (i + 1)), size=1.0) for i in range(depth)]
+        asks = [OrderBookLevel(price=price * (1 + 0.0001 * (i + 1)), size=1.0) for i in range(depth)]
+        return OrderBook(bids=bids, asks=asks, timestamp=time.time())
 
 
 class MockProvider(MarketDataProvider):

@@ -30,6 +30,9 @@ from core.monitoring.trade_journal import TradeJournal
 from core.learning.adaptive_weights import AdaptiveWeightManager
 from core.strategy.strategies import select_strategy, BaseStrategy
 from core.streaming.kafka_bus import InMemoryBus, make_bus
+from core.streaming.event_bus import EventBus
+from core.strategy.selector import StrategySelector
+from core.strategy.strategies import STRATEGY_REGISTRY
 
 log = logging.getLogger("trading_os.orchestrator")
 
@@ -99,7 +102,11 @@ class Orchestrator:
         self._interval = cycle_interval_sec
         self._auto_execute = auto_execute
         self._strategy_override = strategy_override
-        self._bus = event_bus or make_bus(settings.kafka_bootstrap_servers)
+        # Wrap self._bus with our EventBus so we get typed events
+        if event_bus is None or not hasattr(event_bus, "publish"):
+            self._bus = EventBus(settings.kafka_bootstrap_servers)
+        else:
+            self._bus = event_bus
 
         # Agent instances — reused across cycles
         self._tech = TechnicalAnalystAgent()
@@ -109,6 +116,7 @@ class Orchestrator:
         self._da = DevilsAdvocateAgent()
         self._meta = ConsensusEngine()
         self._risk = RiskEngine()
+        self._selector = StrategySelector()
 
         self._running = False
         self._cycle_count = 0
@@ -174,7 +182,28 @@ class Orchestrator:
                 regime = detect_regime(candles, vix=macro.get("vix", 20))
 
             # ── 3. Strategy selection ─────────────────────────────────────────
-            strategy = select_strategy(regime, self.timeframe, self._strategy_override)
+            # Use local strategy selector instead of legacy select_strategy
+            strategy, reason, hurst, vol_pct = self._selector.select(MarketContext(
+                asset=self.asset, timeframe=self.timeframe, candles=candles, current_price=price, regime=regime
+            ))
+            if self._strategy_override:
+                from core.strategy.strategy_base import StrategyType
+                strategy = STRATEGY_REGISTRY.get(StrategyType(self._strategy_override), strategy)
+                reason = "User pinned override"
+
+            # Emit StrategySelected
+            await self._bus.publish("StrategySelected", request_id, {
+                "strategy": strategy.strategy_type.value,
+                "reason": reason,
+                "hurst": hurst,
+                "vol_percentile": vol_pct
+            })
+
+            # Emit Hypothesis
+            hypothesis = self._selector.emit_hypothesis(strategy, MarketContext(
+                asset=self.asset, timeframe=self.timeframe, candles=candles, current_price=price, regime=regime
+            ), hurst, vol_pct)
+            await self._bus.publish("HypothesisEmitted", request_id, hypothesis.__dict__ if hasattr(hypothesis, "__dict__") else hypothesis)
 
             # ── 4. Build context ──────────────────────────────────────────────
             ctx = MarketContext(
@@ -192,6 +221,7 @@ class Orchestrator:
                 },
                 regime=regime,
                 request_id=request_id,
+                hypothesis=hypothesis
             )
 
             # ── 5. Agent analysis (parallel) ──────────────────────────────────
@@ -201,25 +231,47 @@ class Orchestrator:
                 self._quant.analyze(ctx),
                 self._of.analyze(ctx),
             )
+            
+            # Emit ScreeningResult for each voting agent
+            for d in agent_decisions:
+                await self._bus.publish("ScreeningResult", request_id, d.to_dict())
+
             da_decision = await self._da.analyze(ctx)
+            # Emit ScreeningResult for Devil's Advocate
+            await self._bus.publish("ScreeningResult", request_id, da_decision.to_dict())
 
             # ── 6. Consensus ──────────────────────────────────────────────────
-            signal = self._meta.evaluate(
+            signal = await self._meta.evaluate(
                 asset=self.asset,
                 request_id=request_id,
                 regime=regime,
                 decisions=list(agent_decisions),
                 da_decision=da_decision,
+                hypothesis=hypothesis,
+                event_bus=self._bus
             )
             self._last_signal = signal
+            
+            # Emit VerdictReached
+            await self._bus.publish("VerdictReached", request_id, signal.to_dict())
 
             # ── 7. Strategy filter ────────────────────────────────────────────
             strat_ok, strat_reason = strategy.accepts(signal, ctx)
 
             # ── 8. Risk check ─────────────────────────────────────────────────
             executed = False
+            risk_result = None
             if signal.final_decision and strat_ok:
                 risk_result = self._risk.check(signal, self._portfolio, price)
+                
+                # Emit SanitizationApplied
+                await self._bus.publish("SanitizationApplied", request_id, {
+                    "status": risk_result.status.value,
+                    "approved_size_pct": risk_result.approved_position_size_pct,
+                    "stop_loss_price": risk_result.stop_loss_price,
+                    "take_profit_price": risk_result.take_profit_price,
+                    "sanitization_diff": risk_result.sanitization_diff
+                })
 
                 # ── 9. Execution ──────────────────────────────────────────────
                 if self._auto_execute and risk_result.is_tradeable():
@@ -230,6 +282,14 @@ class Orchestrator:
                     await self._router.execute_bracket(signal, risk_result, price)
                     self._portfolio.open_trades += 1
                     executed = True
+                    
+                    # Emit OrderPlaced
+                    await self._bus.publish("OrderPlaced", request_id, {
+                        "asset": self.asset,
+                        "side": signal.action.value if signal.action else "HOLD",
+                        "size_usd": risk_result.approved_position_size_usd,
+                        "price": price
+                    })
 
             # ── 10. Learning loop ─────────────────────────────────────────────
             if signal.final_decision and signal.action:
@@ -240,18 +300,14 @@ class Orchestrator:
 
             # ── 11. Publish to event bus + alerts + journal ───────────────────
             cycle_ms = (time.perf_counter() - t0) * 1000
+            
+            # Emit FinalCall
+            await self._bus.publish("FinalCall", request_id, signal.to_dict())
+
             await asyncio.gather(
-                self._bus.publish_signal(signal.to_dict()),
-                self._bus.publish_metrics({
-                    "asset": self.asset,
-                    "cycle": self._cycle_count,
-                    "cycle_ms": round(cycle_ms, 2),
-                    "confidence": signal.confidence,
-                    "regime": regime,
-                    "timestamp": time.time(),
-                }),
                 self._alerts.signal_generated(signal),
                 self._journal.log_signal(signal, price),
+                return_exceptions=True
             )
             result = CycleResult(
                 request_id=request_id,

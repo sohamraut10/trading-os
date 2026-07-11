@@ -113,3 +113,15 @@ ORDER BY dt DESC, accuracy DESC
 WITH NO DATA;
 
 CREATE UNIQUE INDEX ON agent_accuracy_daily(agent_name, dt);
+
+CREATE TABLE IF NOT EXISTS events (
+    id          BIGSERIAL PRIMARY KEY,
+    event_id    UUID NOT NULL UNIQUE,
+    cycle_id    VARCHAR(50) NOT NULL,
+    ts          TIMESTAMPTZ NOT NULL,
+    event_type  VARCHAR(50) NOT NULL,
+    payload     JSONB NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_events_cycle_id ON events(cycle_id);

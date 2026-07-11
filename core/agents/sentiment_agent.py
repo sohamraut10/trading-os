@@ -89,7 +89,8 @@ class SentimentAgent(BaseAgent):
 
     def __init__(self, api_key: str = "", model: str = "claude-haiku-4-5-20251001"):
         self._model = model
-        self._client = anthropic.Anthropic(api_key=api_key) if _ANTHROPIC_AVAILABLE and api_key else None
+        has_real_key = api_key and not api_key.startswith("your_") and len(api_key) > 10
+        self._client = anthropic.Anthropic(api_key=api_key) if _ANTHROPIC_AVAILABLE and has_real_key else None
 
     async def _analyze(self, ctx: MarketContext) -> AgentDecision:
         headlines = ctx.news_headlines

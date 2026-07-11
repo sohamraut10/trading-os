@@ -16,6 +16,7 @@ from core.agents.order_flow_agent import OrderFlowAgent
 from core.agents.devils_advocate_agent import DevilsAdvocateAgent
 from core.agents.meta_agent import ConsensusEngine, TradeSignal
 from core.monitoring.regime_detector import detect_regime
+from core.strategy.selector import StrategySelector
 
 
 @dataclass
@@ -61,6 +62,20 @@ class BacktestResult:
             "max_drawdown_pct": f"{self.max_drawdown_pct:.2f}%",
             "profit_factor": f"{self.profit_factor:.3f}",
             "avg_hold_bars": f"{self.avg_hold_bars:.1f}",
+            "equity_curve": self.equity_curve,
+            "trades": [
+                {
+                    "side": t.side,
+                    "entry_price": t.entry_price,
+                    "exit_price": t.exit_price,
+                    "pnl_pct": t.pnl_pct,
+                    "entry_bar": t.entry_bar,
+                    "exit_bar": t.exit_bar,
+                    "hit_tp": t.hit_tp,
+                    "hit_sl": t.hit_sl,
+                }
+                for t in self.trades
+            ],
         }
 
 
@@ -91,6 +106,7 @@ class Backtester:
         self._of = OrderFlowAgent()
         self._da = DevilsAdvocateAgent()
         self._meta = ConsensusEngine()
+        self._selector = StrategySelector()
 
     async def run(
         self,
@@ -156,6 +172,10 @@ class Backtester:
             )
 
             try:
+                strategy, reason, hurst, vol_pct = self._selector.select(ctx)
+                hypothesis = self._selector.emit_hypothesis(strategy, ctx, hurst, vol_pct)
+                ctx.hypothesis = hypothesis
+
                 decisions = await asyncio.gather(
                     self._tech.analyze(ctx),
                     self._sent.analyze(ctx),
@@ -163,14 +183,15 @@ class Backtester:
                     self._of.analyze(ctx),
                 )
                 da_decision = await self._da.analyze(ctx)
-                signal = self._meta.evaluate(
+                signal = await self._meta.evaluate(
                     asset=asset,
                     request_id=f"bt_{i}",
                     regime=regime,
                     decisions=list(decisions),
                     da_decision=da_decision,
+                    hypothesis=hypothesis,
                 )
-            except Exception:
+            except Exception as e:
                 continue
 
             if not signal.final_decision or not signal.action:

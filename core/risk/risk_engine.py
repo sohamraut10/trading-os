@@ -1,12 +1,7 @@
-"""
-Risk Management Engine
-Enforces position limits, portfolio exposure caps, circuit breakers,
-and per-trade stop loss / take profit parameters.
-Risk checks run BEFORE any order reaches the execution engine.
-"""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+import math
 
 from config.settings import settings
 from core.agents.meta_agent import TradeSignal
@@ -49,6 +44,7 @@ class RiskCheckResult:
     take_profit_price: float
     rejection_reasons: list[str]
     warnings: list[str]
+    sanitization_diff: list[str] = field(default_factory=list)
 
     def is_tradeable(self) -> bool:
         return self.status in (RiskStatus.APPROVED, RiskStatus.SCALED_DOWN)
@@ -71,6 +67,7 @@ class RiskEngine:
     ) -> RiskCheckResult:
         rejections = []
         warnings = []
+        sanitization_diff = []
 
         # ── Gate 1: Circuit Breakers ────────────────────────────────────────
         if portfolio.daily_pnl_pct <= -self.cfg.max_daily_drawdown:
@@ -103,13 +100,14 @@ class RiskEngine:
                 take_profit_price=0.0,
                 rejection_reasons=rejections,
                 warnings=warnings,
+                sanitization_diff=["Rejected by risk engine gates"],
             )
 
         # ── Gate 3: Position Sizing ─────────────────────────────────────────
         desired_pct = signal.suggested_position_size_pct
         available_pct = self.cfg.max_portfolio_exposure - portfolio.total_exposure_pct
         approved_pct = min(desired_pct, available_pct, self.cfg.max_position_pct)
-        scaled_down = approved_pct < desired_pct * 0.9
+        scaled_down = approved_pct < desired_pct * 0.99
 
         if approved_pct < 0.002:  # too small to be worth trading
             return RiskCheckResult(
@@ -120,19 +118,31 @@ class RiskEngine:
                 take_profit_price=0.0,
                 rejection_reasons=["Position size too small after constraints"],
                 warnings=warnings,
+                sanitization_diff=["Size below minimum trading floor"],
             )
 
         if scaled_down:
             warnings.append(f"Position scaled from {desired_pct:.2%} → {approved_pct:.2%}")
+            sanitization_diff.append(
+                f"size cut {desired_pct * 100:.2f}% -> {approved_pct * 100:.2f}% by exposure limits"
+            )
 
         position_usd = portfolio.equity * approved_pct
 
         # ── Gate 4: Stop Loss / Take Profit Prices ──────────────────────────
         sl_pct = max(signal.suggested_stop_loss_pct, self.cfg.max_trade_drawdown)
-        # Use signal's TP unless it gives a worse R:R than the default floor
+        if signal.suggested_stop_loss_pct < self.cfg.max_trade_drawdown:
+            sanitization_diff.append(
+                f"SL floor applied: {signal.suggested_stop_loss_pct * 100:.2f}% -> {self.cfg.max_trade_drawdown * 100:.2f}%"
+            )
+
         raw_tp = signal.suggested_take_profit_pct
         min_tp = sl_pct * self.cfg.default_rr_ratio
         tp_pct = raw_tp if raw_tp >= min_tp else min_tp
+        if raw_tp < min_tp:
+            sanitization_diff.append(
+                f"TP floor applied: {raw_tp * 100:.2f}% -> {min_tp * 100:.2f}% (R:R {self.cfg.default_rr_ratio}x)"
+            )
 
         if signal.action == Signal.BUY:
             sl_price = current_price * (1 - sl_pct)
@@ -156,15 +166,10 @@ class RiskEngine:
             take_profit_price=round(tp_price, 6),
             rejection_reasons=[],
             warnings=warnings,
+            sanitization_diff=sanitization_diff,
         )
 
     def compute_portfolio_var(self, portfolio: PortfolioState, confidence: float = 0.95) -> float:
-        """
-        1-day Value at Risk using historical simulation.
-        Simplified: assumes 2% daily vol on all positions.
-        Production: use actual position correlations and historical returns.
-        """
-        import numpy as np
         total_exposure = portfolio.equity * portfolio.total_exposure_pct
         daily_vol = 0.02
         z = 1.645 if confidence == 0.95 else 2.326  # 99%

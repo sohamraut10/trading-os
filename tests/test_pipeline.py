@@ -115,7 +115,7 @@ async def test_full_pipeline(ctx):
         of.analyze(ctx),
     )
     da_decision = await da.analyze(ctx)
-    signal = meta.evaluate(
+    signal = await meta.evaluate(
         asset=ctx.asset,
         request_id="test-001",
         regime=ctx.regime,
@@ -146,7 +146,7 @@ async def test_risk_engine(ctx):
 
     decisions = await asyncio.gather(tech.analyze(ctx), sent.analyze(ctx), quant.analyze(ctx), of.analyze(ctx))
     da_d = await da.analyze(ctx)
-    signal = meta.evaluate("BTC/USDT", "test-002", ctx.regime, list(decisions), da_d)
+    signal = await meta.evaluate("BTC/USDT", "test-002", ctx.regime, list(decisions), da_d)
 
     portfolio = PortfolioState(
         equity=100_000.0, cash=100_000.0, open_trades=2,

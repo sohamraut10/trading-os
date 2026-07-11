@@ -1,21 +1,20 @@
 """
-Demo runner — executes a full consensus cycle on mock BTC/USDT data
-and prints the final output. No API keys required.
+Live runner — executes a full consensus cycle on LIVE market data from Binance.
+No API keys required for public market data.
 
 Usage:
-    python scripts/run_demo.py
-    python scripts/run_demo.py --asset ETHUSDT --trend bearish
+    python scripts/run_live_demo.py
+    python scripts/run_live_demo.py --asset ETHUSDT
 """
 import asyncio
 import json
 import argparse
 import sys
 import time
-
 import os
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import numpy as np
 from core.agents.base_agent import MarketContext, OHLCV, OrderBook, OrderBookLevel
 from core.agents.technical_agent import TechnicalAnalystAgent
 from core.agents.sentiment_agent import SentimentAgent
@@ -25,46 +24,43 @@ from core.agents.devils_advocate_agent import DevilsAdvocateAgent
 from core.agents.meta_agent import ConsensusEngine
 from core.monitoring.regime_detector import detect_regime
 from core.risk.risk_engine import RiskEngine, PortfolioState
-from core.data.market_data import MockProvider
+from core.data.market_data import BinanceProvider
 
 
-def generate_candles(n: int = 300, trend: float = 0.0015, seed: int = 42) -> list[OHLCV]:
-    rng = np.random.default_rng(seed)
-    price = 65000.0
-    candles = []
-    for i in range(n):
-        ret = rng.normal(trend, 0.012)
-        o = price
-        c = price * (1 + ret)
-        h = max(o, c) * (1 + abs(rng.normal(0, 0.002)))
-        l = min(o, c) * (1 - abs(rng.normal(0, 0.002)))
-        v = rng.uniform(800, 4500)
-        candles.append(OHLCV(time.time() - (n - i) * 3600, round(o, 2), round(h, 2), round(l, 2), round(c, 2), round(v, 2)))
-        price = c
-    return candles
+async def run(asset: str):
+    # Normalize asset for Binance (e.g., BTC/USDT -> BTCUSDT)
+    binance_symbol = asset.replace("/", "").upper()
 
+    print(f"Connecting to Binance public API to fetch live data for {binance_symbol}...")
+    provider = BinanceProvider()
 
-async def run(asset: str, trend_arg: str):
-    trend_map = {"bullish": 0.002, "bearish": -0.002, "sideways": 0.0}
-    trend = trend_map.get(trend_arg, 0.001)
-    seed = {"bullish": 42, "bearish": 99, "sideways": 7}.get(trend_arg, 42)
-
-    candles = generate_candles(300, trend, seed)
-    price = candles[-1].close
-
-    bids = [OrderBookLevel(price * (1 - 0.0005 * (i+1)), 2.5 + i * 0.1) for i in range(20)]
-    asks = [OrderBookLevel(price * (1 + 0.0005 * (i+1)), 2.5 - i * 0.05) for i in range(20)]
-    ob = OrderBook(bids=bids, asks=asks, timestamp=time.time())
+    try:
+        t_data_start = time.perf_counter()
+        candles = await provider.get_candles(binance_symbol, timeframe="1h", limit=300)
+        price = await provider.get_current_price(binance_symbol)
+        ob = await provider.get_order_book(binance_symbol, depth=20)
+        elapsed_data = (time.perf_counter() - t_data_start) * 1000
+        print(f"Fetched live market data (300 candles + L2 book) in {elapsed_data:.1f}ms\n")
+    except Exception as e:
+        print(f"Error fetching data from Binance: {e}")
+        print("Please check your internet connection or the symbol name.")
+        sys.exit(1)
 
     regime = detect_regime(candles)
-    print(f"\n{'='*60}")
-    print(f"  TRADING OS — Multi-Agent Consensus Engine")
+    print(f"{'='*60}")
+    print(f"  TRADING OS — Multi-Agent Consensus Engine (LIVE DATA)")
     print(f"{'='*60}")
     print(f"  Asset    : {asset}")
-    print(f"  Price    : ${price:,.2f}")
+    print(f"  Live Price: ${price:,.2f}")
     print(f"  Regime   : {regime.upper()}")
-    print(f"  Scenario : {trend_arg.upper()}")
     print(f"{'='*60}\n")
+
+    # Use standard relevant crypto news headlines
+    news_headlines = [
+        f"Bitcoin ETF inflows signal strong institutional demand for {asset}",
+        "Global regulatory clarity boosts confidence in crypto assets",
+        "Macro liquidity conditions support risk-on market assets",
+    ]
 
     ctx = MarketContext(
         asset=asset,
@@ -72,19 +68,11 @@ async def run(asset: str, trend_arg: str):
         candles=candles,
         current_price=price,
         order_book=ob,
-        news_headlines=[
-            "Bitcoin institutional demand surges to record",
-            "Federal Reserve holds rates steady",
-            "Crypto ETF approval drives market optimism",
-        ] if trend_arg == "bullish" else [
-            "Crypto market selloff amid regulatory concerns",
-            "Large exchange reports security breach",
-            "SEC intensifies crypto scrutiny",
-        ],
-        macro_context={"vix": 18, "sp500_1d_change_pct": 0.5, "near_fed_event": False, "days_to_earnings": 30},
+        news_headlines=news_headlines,
+        macro_context={"vix": 15, "sp500_1d_change_pct": 0.2, "near_fed_event": False, "days_to_earnings": 30},
         portfolio_context={"active_strategy": "swing", "consecutive_losses": 0},
         regime=regime,
-        request_id="demo-001",
+        request_id="live-demo-001",
     )
 
     agents = [
@@ -97,7 +85,7 @@ async def run(asset: str, trend_arg: str):
     meta = ConsensusEngine()
     risk_engine = RiskEngine()
 
-    print("Running agents in parallel...")
+    print("Running agents in parallel on live data...")
     t0 = time.perf_counter()
     decisions = await asyncio.gather(*[a.analyze(ctx) for a in agents])
     da_decision = await da.analyze(ctx)
@@ -109,13 +97,13 @@ async def run(asset: str, trend_arg: str):
         icon = {"BUY": "▲", "SELL": "▼", "HOLD": "●"}.get(d.signal.value, "?")
         print(f"  [{icon}] {d.agent_name.value:<12} | {d.signal.value:<5} | conf={d.confidence:>5.1f}% | {d.reasoning[:70]}")
 
-    print(f"\n  [☠] DevilsAdvocate | {da_decision.signal.value:<5} | conf={da_decision.confidence:>5.1f}% | {da_decision.reasoning[:70]}")
+    print(f"  [☠] DevilsAdvocate | {da_decision.signal.value:<5} | conf={da_decision.confidence:>5.1f}% | {da_decision.reasoning[:70]}")
 
     print(f"\n{'─'*60}")
     print("  META AGENT — Computing consensus...")
     signal = meta.evaluate(
         asset=asset,
-        request_id="demo-001",
+        request_id="live-demo-001",
         regime=regime,
         decisions=list(decisions),
         da_decision=da_decision,
@@ -171,8 +159,7 @@ async def run(asset: str, trend_arg: str):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Trading OS Demo")
-    parser.add_argument("--asset", default="BTC/USDT")
-    parser.add_argument("--trend", default="bullish", choices=["bullish", "bearish", "sideways"])
+    parser = argparse.ArgumentParser(description="Trading OS Live Demo")
+    parser.add_argument("--asset", default="BTC/USDT", help="Binance asset pair (e.g. BTC/USDT or ETH/USDT)")
     args = parser.parse_args()
-    asyncio.run(run(args.asset, args.trend))
+    asyncio.run(run(args.asset))
