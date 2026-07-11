@@ -56,10 +56,10 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
-    # Infrastructure
-    redis_url: str = "redis://localhost:6379"
-    database_url: str = "postgresql+asyncpg://trading:trading@localhost:5432/trading_os"
-    kafka_bootstrap_servers: str = "localhost:9092"
+    # Infrastructure (empty defaults = in-memory / disabled — safe for Vercel serverless)
+    redis_url: str = ""
+    database_url: str = ""
+    kafka_bootstrap_servers: str = ""
 
     # Sub-configs
     agent_weights: AgentWeights = AgentWeights()

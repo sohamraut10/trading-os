@@ -399,6 +399,27 @@ async def get_candles_endpoint(asset: str, timeframe: str = "1h", limit: int = 1
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/")
+async def root():
+    """Landing / docs redirect for Vercel and local health checks."""
+    return {
+        "name": "Trading OS",
+        "version": "1.0.0",
+        "status": "ok",
+        "docs": "/docs",
+        "health": "/health",
+        "endpoints": {
+            "POST /analyze": "Multi-agent consensus signal for an asset",
+            "POST /backtest": "Walk-forward backtest",
+            "POST /backtest/optimize": "Grid-search SL/TP optimization",
+            "GET /portfolio": "Paper portfolio status",
+            "GET /agents/performance": "Adaptive agent weight report",
+            "GET /metrics": "Prometheus metrics",
+            "WS /ws/signals": "Live signal stream (limited on serverless)",
+        },
+    }
+
+
 @app.get("/health")
 async def health():
     return {
