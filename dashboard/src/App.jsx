@@ -2,7 +2,7 @@ import React, { useReducer, useEffect, useState } from "react";
 import { 
   initialState, eventReducer 
 } from "./eventReducer";
-import { connectWS } from "./ws";
+import { connectEvents } from "./eventsPoller";
 import { 
   fetchPortfolio, fetchAgentPerformance, pinStrategy, fetchCycleEvents, fetchCandles 
 } from "./api";
@@ -39,9 +39,9 @@ export default function App() {
     loadCandles();
   }, [activeCycle?.asset]);
 
-  // 1. WebSocket Event Stream Connection
+  // 1. Event stream (polling /events/recent — works on both Vercel and Docker)
   useEffect(() => {
-    const wsManager = connectWS(
+    const poller = connectEvents(
       (event) => {
         dispatch({ type: "ADD_EVENT", payload: event });
       },
@@ -49,7 +49,7 @@ export default function App() {
         dispatch({ type: "SET_STATUS", payload: status });
       }
     );
-    return () => wsManager.close();
+    return () => poller.close();
   }, []);
 
   // 2. Poll Portfolio, Positions, and Agent Performance every 5 seconds

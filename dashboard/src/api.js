@@ -1,4 +1,7 @@
-const API_URL = `${window.location.protocol}//${window.location.host}`;
+// VITE_API_BASE is a build-time env var: "" for local/Docker (FastAPI serves
+// routes at root), "/api" when deployed to Vercel (routes are mounted there
+// — see api/index.py and vercel.json).
+export const API_URL = `${window.location.protocol}//${window.location.host}${import.meta.env.VITE_API_BASE || ""}`;
 
 export async function fetchPortfolio() {
   const res = await fetch(`${API_URL}/portfolio`);
