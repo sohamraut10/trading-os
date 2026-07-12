@@ -27,7 +27,10 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
+# start.sh initialises the DB schema (idempotent) then launches uvicorn.
 # Single worker: AppState (portfolio, websocket clients, event log) is
-# process-local, so >1 worker would each hold a divergent portfolio/event
-# log and only a fraction of clients would see any given broadcast.
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# process-local — >1 worker would diverge.
+CMD ["/app/start.sh"]

@@ -15,9 +15,7 @@ google-genai>=1.0.0
 # core/execution/broker_interface.py); if you need real Alpaca execution,
 # install alpaca-trade-api in a separate environment without google-genai,
 # or migrate core/execution/broker_interface.py to alpaca-py.
-# dhanhq is an optional dependency for Dhan broker/data integration (Indian markets).
-# Install separately: pip install dhanhq
-# Not listed here to avoid conflicts; DhanBroker/DhanProvider degrade gracefully if absent.
+dhanhq>=2.0.0
 redis[asyncio]>=5.0.0
 asyncpg>=0.29.0
 sqlalchemy[asyncio]>=2.0.0
