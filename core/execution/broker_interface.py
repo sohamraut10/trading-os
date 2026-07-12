@@ -21,6 +21,59 @@ try:
 except ImportError:
     _ALPACA_AVAILABLE = False
 
+try:
+    import dhanhq as _dhanhq
+    _DHANHQ_AVAILABLE = True
+except ImportError:
+    _DHANHQ_AVAILABLE = False
+
+# NSE symbol → Dhan security_id (from Dhan instrument master).
+# For a full list download: https://www.dhan.co/docs/static-data/
+# Index symbols resolve via IDX_I exchange; equities via NSE_EQ / BSE_EQ.
+_NSE_SECURITY_ID_MAP: dict[str, str] = {
+    # NSE Equities
+    "RELIANCE":    "1333",
+    "TCS":         "11536",
+    "INFY":        "1594",
+    "HDFCBANK":    "1348",
+    "ICICIBANK":   "4963",
+    "HINDUNILVR":  "1394",
+    "SBIN":        "3045",
+    "BAJFINANCE":  "317",
+    "WIPRO":       "3787",
+    "TATAMOTORS":  "3456",
+    "AXISBANK":    "5900",
+    "KOTAKBANK":   "1922",
+    "MARUTI":      "10999",
+    "NTPC":        "11630",
+    "ONGC":        "11543",
+    "BHARTIARTL":  "10604",
+    "ASIANPAINT":  "236",
+    "LT":          "11483",
+    "TITAN":       "3506",
+    "SUNPHARMA":   "3351",
+    "HCLTECH":     "1363",
+    "TATASTEEL":   "3499",
+    "BAJAJFINSV":  "16669",
+    "NESTLEIND":   "17963",
+    "POWERGRID":   "14977",
+    "DIVISLAB":    "15414",
+    "DRREDDY":     "881",
+    "EICHERMOT":   "910",
+    "GRASIM":      "1232",
+    "JSWSTEEL":    "11723",
+    "ADANIENT":    "1253",
+    "ADANIPORTS":  "15083",
+    "ULTRACEMCO":  "2344",
+    # Indices (IDX_I exchange, instrument_type=INDEX)
+    "NIFTY":       "13",
+    "NIFTY50":     "13",
+    "BANKNIFTY":   "25",
+    "FINNIFTY":    "27",
+    "NIFTYNXT50":  "26",
+    "MIDCPNIFTY":  "442",
+}
+
 
 class OrderType(str, Enum):
     MARKET = "market"
@@ -109,6 +162,9 @@ class AlpacaBroker(BrokerAdapter):
 
     async def submit_order(self, order: Order) -> Order:
         loop = asyncio.get_event_loop()
+        # Alpaca rejects market orders that include limit_price/stop_price
+        limit_price = order.limit_price if order.order_type in (OrderType.LIMIT, OrderType.STOP_LIMIT) else None
+        stop_price = order.stop_price if order.order_type in (OrderType.STOP, OrderType.STOP_LIMIT) else None
         try:
             result = await loop.run_in_executor(
                 None,
@@ -118,8 +174,8 @@ class AlpacaBroker(BrokerAdapter):
                     side=order.side,
                     type=order.order_type.value,
                     time_in_force="gtc",
-                    limit_price=order.limit_price,
-                    stop_price=order.stop_price,
+                    limit_price=limit_price,
+                    stop_price=stop_price,
                 )
             )
             order.broker_order_id = result.id
@@ -144,6 +200,45 @@ class AlpacaBroker(BrokerAdapter):
         order.status = OrderStatus(raw.status)
         order.filled_qty = float(raw.filled_qty or 0)
         order.avg_fill_price = float(raw.filled_avg_price or 0)
+        return order
+
+    async def cancel_orders_for_symbol(self, symbol: str) -> int:
+        """Cancel all open orders for a symbol before submitting a close."""
+        loop = asyncio.get_event_loop()
+        try:
+            orders = await loop.run_in_executor(None, lambda: self._api.list_orders(status="open"))
+            sym_orders = [o for o in orders if o.symbol == symbol]
+            for o in sym_orders:
+                await loop.run_in_executor(None, lambda oid=o.id: self._api.cancel_order(oid))
+            return len(sym_orders)
+        except Exception:
+            return 0
+
+    async def close_position_native(self, symbol: str) -> Order:
+        """Cancel all open orders for the symbol, then close the position via Alpaca's native endpoint."""
+        loop = asyncio.get_event_loop()
+        order = Order(asset=symbol, side="sell", order_type=OrderType.MARKET)
+        # Normalize: Alpaca may store as "BTC/USD" while we use "BTCUSD"
+        normalized = symbol.replace("/", "").replace("-", "")
+        try:
+            # Cancel all open orders for this symbol to free locked inventory
+            open_orders = await loop.run_in_executor(None, lambda: self._api.list_orders(status="open"))
+            for o in open_orders:
+                if o.symbol.replace("/", "").replace("-", "") == normalized:
+                    try:
+                        await loop.run_in_executor(None, lambda oid=o.id: self._api.cancel_order(oid))
+                    except Exception:
+                        pass
+            # Small delay for cancellations to propagate
+            await asyncio.sleep(1.0)
+            result = await loop.run_in_executor(None, lambda: self._api.close_position(symbol))
+            order.broker_order_id = result.id
+            order.status = OrderStatus.SUBMITTED
+            order.filled_qty = float(result.filled_qty or 0)
+            order.avg_fill_price = float(result.filled_avg_price or 0)
+        except Exception as e:
+            order.status = OrderStatus.REJECTED
+            order.metadata["error"] = str(e)
         return order
 
     async def get_positions(self) -> dict[str, Any]:
@@ -223,6 +318,208 @@ class PaperBroker(BrokerAdapter):
             "cash": self._cash,
             "buying_power": self._cash,
         }
+
+
+class DhanBroker(BrokerAdapter):
+    """
+    Dhan broker adapter for Indian markets (NSE/BSE equities, F&O, currency, commodity).
+
+    Symbol resolution: Dhan identifies instruments by a numeric security_id.
+    Pass the security_id directly (e.g. "500325" for RELIANCE NSE) or a
+    ticker string (e.g. "RELIANCE") — ticker strings trigger a search-API
+    lookup on first use and the result is cached for the session.
+
+    Set order.metadata["exchange"] to override the default exchange segment
+    (e.g. "BSE_EQ", "NSE_FNO"). Default comes from the constructor arg.
+    Set order.metadata["security_id"] to skip symbol resolution entirely.
+    """
+
+    # Dhan order-type mapping
+    _ORDER_TYPE_MAP = {
+        OrderType.MARKET:    "MARKET",
+        OrderType.LIMIT:     "LIMIT",
+        OrderType.STOP:      "STOP_LOSS_MARKET",
+        OrderType.STOP_LIMIT: "STOP_LOSS",
+        OrderType.TRAILING_STOP: "MARKET",  # not natively supported — falls back
+    }
+
+    # Dhan status → our OrderStatus
+    _STATUS_MAP = {
+        "PENDING":    OrderStatus.PENDING,
+        "TRANSIT":    OrderStatus.SUBMITTED,
+        "TRADED":     OrderStatus.FILLED,
+        "PART_TRADED": OrderStatus.PARTIAL,
+        "CANCELLED":  OrderStatus.CANCELLED,
+        "REJECTED":   OrderStatus.REJECTED,
+        "EXPIRED":    OrderStatus.CANCELLED,
+    }
+
+    def __init__(
+        self,
+        client_id: str,
+        access_token: str,
+        default_exchange: str = "NSE_EQ",
+        product_type: str = "CNC",
+    ):
+        if not _DHANHQ_AVAILABLE:
+            raise RuntimeError(
+                "dhanhq is not installed — run `pip install dhanhq` or "
+                "unset DHAN_CLIENT_ID to use PaperBroker instead."
+            )
+        ctx = _dhanhq.DhanContext(client_id, access_token)
+        self._dhan = _dhanhq.dhanhq(ctx)
+        self._default_exchange = default_exchange
+        self._product_type = product_type
+        self._symbol_cache: dict[str, str] = {}  # ticker → security_id
+
+    def _resolve_security_id(self, symbol: str) -> str:
+        """Return numeric security_id via static map; use symbol directly if numeric."""
+        if symbol.lstrip("-").isdigit():
+            return symbol
+        upper = symbol.upper()
+        if upper in self._symbol_cache:
+            return self._symbol_cache[upper]
+        sid = _NSE_SECURITY_ID_MAP.get(upper)
+        if sid:
+            self._symbol_cache[upper] = sid
+            return sid
+        # Last resort: return symbol unchanged (works when user passes raw ID)
+        return symbol
+
+    async def submit_order(self, order: Order) -> Order:
+        loop = asyncio.get_event_loop()
+        security_id = order.metadata.get("security_id") or self._resolve_security_id(order.asset)
+        exchange = order.metadata.get("exchange", self._default_exchange)
+        dhan_order_type = self._ORDER_TYPE_MAP.get(order.order_type, "MARKET")
+        price = order.limit_price or 0
+        trigger_price = order.stop_price or 0
+        transaction_type = "BUY" if order.side.lower() == "buy" else "SELL"
+        qty = max(1, int(order.quantity))
+
+        try:
+            result = await loop.run_in_executor(
+                None,
+                lambda: self._dhan.place_order(
+                    security_id=security_id,
+                    exchange_segment=exchange,
+                    transaction_type=transaction_type,
+                    quantity=qty,
+                    order_type=dhan_order_type,
+                    product_type=self._product_type,
+                    price=price,
+                    trigger_price=trigger_price,
+                ),
+            )
+            resp = result if isinstance(result, dict) else {}
+            order_id = resp.get("data", {}).get("orderId", "") if isinstance(resp.get("data"), dict) else str(resp.get("orderId", ""))
+            order.broker_order_id = order_id
+            order.status = OrderStatus.SUBMITTED
+        except Exception as e:
+            order.status = OrderStatus.REJECTED
+            order.metadata["error"] = str(e)
+        return order
+
+    async def cancel_order(self, order_id: str) -> bool:
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(None, lambda: self._dhan.cancel_order(order_id))
+            return True
+        except Exception:
+            return False
+
+    async def get_order_status(self, order_id: str) -> Order:
+        loop = asyncio.get_event_loop()
+        order = Order(broker_order_id=order_id)
+        try:
+            raw = await loop.run_in_executor(None, lambda: self._dhan.get_order_by_id(order_id))
+            data = raw.get("data", {}) if isinstance(raw, dict) else {}
+            if isinstance(data, list):
+                data = data[0] if data else {}
+            order.status = self._STATUS_MAP.get(data.get("orderStatus", ""), OrderStatus.SUBMITTED)
+            order.filled_qty = float(data.get("filledQty", 0))
+            order.avg_fill_price = float(data.get("price", 0))
+            order.asset = data.get("tradingSymbol", "")
+        except Exception as e:
+            order.metadata["error"] = str(e)
+        return order
+
+    async def get_positions(self) -> dict[str, Any]:
+        loop = asyncio.get_event_loop()
+        try:
+            raw = await loop.run_in_executor(None, self._dhan.get_positions)
+            raw_data = raw.get("data") if isinstance(raw, dict) else None
+            rows = raw_data if isinstance(raw_data, list) else []
+            result = {}
+            for p in rows:
+                symbol = p.get("tradingSymbol", p.get("securityId", ""))
+                net_qty = float(p.get("netQty", 0))
+                if net_qty != 0:
+                    result[symbol] = {
+                        "qty": net_qty,
+                        "value": net_qty * float(p.get("lastTradedPrice", 0)),
+                        "avg_price": float(p.get("buyAvg", p.get("costPrice", 0))),
+                        "security_id": str(p.get("securityId", "")),
+                        "exchange": p.get("exchangeSegment", self._default_exchange),
+                    }
+            return result
+        except Exception:
+            return {}
+
+    async def get_account(self) -> dict[str, Any]:
+        loop = asyncio.get_event_loop()
+        try:
+            raw = await loop.run_in_executor(None, self._dhan.get_fund_limits)
+            raw_data = raw.get("data") if isinstance(raw, dict) else None
+            data = raw_data if isinstance(raw_data, dict) else {}
+            available = float(data.get("availabelBalance", data.get("availableBalance", 0)))
+            used = float(data.get("utilizedAmount", 0))
+            return {
+                "equity": available + used,
+                "cash": available,
+                "buying_power": available,
+            }
+        except Exception:
+            return {"equity": 0.0, "cash": 0.0, "buying_power": 0.0}
+
+    async def close_position_native(self, symbol: str) -> Order:
+        """Cancel open orders for symbol then place a market sell for the full net qty."""
+        positions = await self.get_positions()
+        pos = positions.get(symbol, {})
+        net_qty = pos.get("qty", 0)
+        order = Order(asset=symbol, side="sell", order_type=OrderType.MARKET)
+
+        if net_qty <= 0:
+            order.status = OrderStatus.REJECTED
+            order.metadata["error"] = f"No open position for {symbol}"
+            return order
+
+        # Cancel any open orders for this symbol
+        loop = asyncio.get_event_loop()
+        try:
+            open_orders = await loop.run_in_executor(None, self._dhan.get_order_list)
+            orders_data = open_orders.get("data", []) if isinstance(open_orders, dict) else open_orders or []
+            for o in orders_data:
+                if (o.get("tradingSymbol") == symbol and
+                        o.get("orderStatus") in ("PENDING", "TRANSIT", "PART_TRADED")):
+                    try:
+                        await loop.run_in_executor(
+                            None, lambda oid=o["orderId"]: self._dhan.cancel_order(oid)
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        security_id = pos.get("security_id") or self._resolve_security_id(symbol)
+        exchange = pos.get("exchange", self._default_exchange)
+        close_order = Order(
+            asset=symbol,
+            side="sell",
+            quantity=abs(net_qty),
+            order_type=OrderType.MARKET,
+            metadata={"security_id": security_id, "exchange": exchange},
+        )
+        return await self.submit_order(close_order)
 
 
 class SmartOrderRouter:

@@ -36,3 +36,25 @@ export async function fetchCandles(asset) {
   if (!res.ok) throw new Error("Failed to fetch candles");
   return res.json();
 }
+
+export async function fetchPairSuggestions() {
+  const res = await fetch(`${API_URL}/pairs/suggest`);
+  if (!res.ok) return { pairs: [], broker: "" };
+  return res.json();
+}
+
+export async function searchPairs(query) {
+  const res = await fetch(`${API_URL}/pairs/search?q=${encodeURIComponent(query)}`);
+  if (!res.ok) return { pairs: [], broker: "" };
+  return res.json();
+}
+
+export async function analyzeAsset(asset, timeframe = "1h", candle_limit = 100) {
+  const res = await fetch(`${API_URL}/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ asset, timeframe, candle_limit, execute_if_signal: false }),
+  });
+  if (!res.ok) throw new Error("Analysis failed");
+  return res.json();
+}
