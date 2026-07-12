@@ -4,6 +4,7 @@ import {
   Play, Activity, Layers, HelpCircle, UserCheck,
   Search, X, Zap, ChevronRight
 } from "lucide-react";
+import { fetchOptionExpiries, fetchOptionChain } from "../api";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from "recharts";
 
 // 1. Pipeline Ticker
@@ -749,6 +750,215 @@ export function PairSelector({ suggestions, broker, selectedAsset, onSelect, onA
   );
 }
 
+
+// 12. Options Chain (Zerodha-style)
+function fmtOI(n) {
+  if (!n || n === 0) return "—";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return String(n);
+}
+
+function fmtExpiry(dateStr) {
+  if (!dateStr) return "";
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const parts = dateStr.split("-");
+  if (parts.length < 3) return dateStr;
+  const day = parseInt(parts[2], 10);
+  const mon = parseInt(parts[1], 10) - 1;
+  return `${day} ${months[mon]}`;
+}
+
+export function OptionsChain({ symbol, onSelectContract }) {
+  const [expiries, setExpiries] = React.useState([]);
+  const [selectedExpiry, setSelectedExpiry] = React.useState("");
+  const [chain, setChain] = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [selectedKey, setSelectedKey] = React.useState(null);
+  const [selectedContract, setSelectedContract] = React.useState(null);
+
+  // Load expiries when symbol changes
+  React.useEffect(() => {
+    if (!symbol) return;
+    setExpiries([]);
+    setSelectedExpiry("");
+    setChain(null);
+    setSelectedKey(null);
+    setSelectedContract(null);
+    fetchOptionExpiries(symbol).then((data) => {
+      const list = data.expiries || [];
+      setExpiries(list);
+      if (list.length > 0) setSelectedExpiry(list[0]);
+    });
+  }, [symbol]);
+
+  // Load chain when expiry is selected
+  React.useEffect(() => {
+    if (!symbol || !selectedExpiry) return;
+    setLoading(true);
+    setChain(null);
+    fetchOptionChain(symbol, selectedExpiry).then((data) => {
+      setChain(data);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, [symbol, selectedExpiry]);
+
+  const spot = chain?.spot || 0;
+  const strikes = chain?.strikes || [];
+
+  const handleSelect = (row, type) => {
+    const leg = type === "CE" ? row.ce : row.pe;
+    const key = `${row.strike}-${type}`;
+    setSelectedKey(key);
+    const contract = {
+      symbol,
+      strike: row.strike,
+      type,
+      security_id: leg.security_id,
+      expiry: selectedExpiry,
+    };
+    setSelectedContract(contract);
+    if (onSelectContract) onSelectContract(contract);
+  };
+
+  const clearSelection = () => {
+    setSelectedKey(null);
+    setSelectedContract(null);
+  };
+
+  return (
+    <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-5 backdrop-blur-lg space-y-3">
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+          {symbol} Options
+          {spot > 0 && (
+            <span className="ml-3 text-indigo-400 font-mono">₹{spot.toLocaleString("en-IN", { maximumFractionDigits: 2 })}</span>
+          )}
+        </span>
+        {expiries.length > 0 && (
+          <select
+            value={selectedExpiry}
+            onChange={(e) => setSelectedExpiry(e.target.value)}
+            className="bg-slate-950 border border-slate-700 text-slate-200 text-xs rounded-lg px-2 py-1.5 outline-none focus:border-indigo-500 font-mono"
+          >
+            {expiries.map((exp) => (
+              <option key={exp} value={exp}>{fmtExpiry(exp)}</option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {/* Column Headers */}
+      <div className="grid grid-cols-7 text-[10px] font-mono font-bold text-slate-500 uppercase tracking-wider border-b border-slate-800 pb-1">
+        <div className="col-span-1 text-right pr-2">CE OI</div>
+        <div className="col-span-1 text-right pr-2">IV%</div>
+        <div className="col-span-1 text-right pr-2 text-emerald-500">LTP</div>
+        <div className="col-span-1 text-center text-slate-400">Strike</div>
+        <div className="col-span-1 text-left pl-2 text-red-500">LTP</div>
+        <div className="col-span-1 text-left pl-2">IV%</div>
+        <div className="col-span-1 text-left pl-2">PE OI</div>
+      </div>
+
+      {/* Rows */}
+      <div className="space-y-0 overflow-y-auto max-h-[420px]">
+        {loading ? (
+          <div className="text-center text-slate-500 font-mono text-xs py-6">Loading chain…</div>
+        ) : strikes.length === 0 ? (
+          <div className="text-center text-slate-600 font-mono text-xs py-6">
+            {selectedExpiry ? "No data available" : "Select an expiry"}
+          </div>
+        ) : (
+          strikes.map((row) => {
+            const isATM = spot > 0 && Math.abs(row.strike - spot) === strikes.reduce((min, s) => Math.min(min, Math.abs(s.strike - spot)), Infinity);
+            const itmCE = spot > 0 && row.strike < spot;
+            const itmPE = spot > 0 && row.strike > spot;
+            const ceKey = `${row.strike}-CE`;
+            const peKey = `${row.strike}-PE`;
+            const ceSelected = selectedKey === ceKey;
+            const peSelected = selectedKey === peKey;
+
+            return (
+              <div
+                key={row.strike}
+                className={`grid grid-cols-7 text-xs font-mono border-b border-slate-800/30 ${
+                  isATM ? "bg-indigo-500/15 border border-indigo-500/30 rounded" : ""
+                }`}
+              >
+                {/* CE side (3 cols) */}
+                <div
+                  onClick={() => handleSelect(row, "CE")}
+                  className={`col-span-3 grid grid-cols-3 cursor-pointer py-1.5 rounded-l transition ${
+                    ceSelected
+                      ? "bg-emerald-500/20 ring-1 ring-emerald-500/50"
+                      : itmCE
+                      ? "bg-emerald-500/8 hover:bg-emerald-500/15"
+                      : "hover:bg-slate-800/40"
+                  }`}
+                >
+                  <div className="text-right pr-2 text-slate-300">{fmtOI(row.ce?.oi)}</div>
+                  <div className="text-right pr-2 text-slate-400">
+                    {row.ce?.iv ? row.ce.iv.toFixed(1) : "—"}
+                  </div>
+                  <div className="text-right pr-2 text-emerald-400 font-semibold">
+                    {row.ce?.ltp ? row.ce.ltp.toFixed(2) : "—"}
+                  </div>
+                </div>
+
+                {/* Strike (center) */}
+                <div className="col-span-1 text-center py-1.5 font-bold text-slate-200">
+                  {row.strike % 1 === 0 ? row.strike.toFixed(0) : row.strike.toFixed(1)}
+                </div>
+
+                {/* PE side (3 cols) */}
+                <div
+                  onClick={() => handleSelect(row, "PE")}
+                  className={`col-span-3 grid grid-cols-3 cursor-pointer py-1.5 rounded-r transition ${
+                    peSelected
+                      ? "bg-red-500/20 ring-1 ring-red-500/50"
+                      : itmPE
+                      ? "bg-red-500/8 hover:bg-red-500/15"
+                      : "hover:bg-slate-800/40"
+                  }`}
+                >
+                  <div className="text-left pl-2 text-red-400 font-semibold">
+                    {row.pe?.ltp ? row.pe.ltp.toFixed(2) : "—"}
+                  </div>
+                  <div className="text-left pl-2 text-slate-400">
+                    {row.pe?.iv ? row.pe.iv.toFixed(1) : "—"}
+                  </div>
+                  <div className="text-left pl-2 text-slate-300">{fmtOI(row.pe?.oi)}</div>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* Selected contract footer */}
+      {selectedContract && (
+        <div className="flex items-center justify-between bg-slate-950/60 border border-indigo-500/20 rounded-lg px-3 py-2 mt-1">
+          <span className="text-xs font-mono text-indigo-300">
+            Selected: {selectedContract.symbol} {selectedContract.strike} {selectedContract.type}
+            {selectedContract.type === "CE"
+              ? chain?.strikes?.find((s) => s.strike === selectedContract.strike)?.ce?.ltp
+                ? ` · ₹${chain.strikes.find((s) => s.strike === selectedContract.strike).ce.ltp.toFixed(2)}`
+                : ""
+              : chain?.strikes?.find((s) => s.strike === selectedContract.strike)?.pe?.ltp
+              ? ` · ₹${chain.strikes.find((s) => s.strike === selectedContract.strike).pe.ltp.toFixed(2)}`
+              : ""}
+          </span>
+          <button
+            onClick={clearSelection}
+            className="text-slate-500 hover:text-slate-300 ml-3"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // 13. TradingView Price Chart
 import { createChart } from "lightweight-charts";
