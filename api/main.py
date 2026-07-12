@@ -91,6 +91,25 @@ class AppState:
         else:
             self.market_data = BinanceProvider(settings.binance_api_key or "", settings.binance_secret or "")
 
+        # Secondary providers — kept alive alongside the primary so the
+        # dashboard can chart US stocks even when Dhan is the active broker.
+        self.secondary_providers: dict[str, MarketDataProvider] = {}
+        alpaca_also_configured = (
+            settings.alpaca_api_key and
+            not settings.alpaca_api_key.startswith("your_") and
+            not isinstance(self.market_data, AlpacaProvider)
+        )
+        if alpaca_also_configured:
+            try:
+                self.secondary_providers["alpaca"] = AlpacaProvider(
+                    api_key=settings.alpaca_api_key,
+                    secret_key=settings.alpaca_secret_key,
+                    base_url=settings.alpaca_base_url,
+                )
+                log.info("AlpacaProvider registered as secondary data source")
+            except Exception:
+                log.exception("Failed to initialize secondary AlpacaProvider")
+
         self.news_feed = NewsFeed(
             news_api_key=settings.news_api_key,
             redis_url=settings.redis_url,
@@ -377,9 +396,12 @@ async def get_dashboard():
 
 
 @router.get("/candles")
-async def get_candles_endpoint(asset: str, timeframe: str = "1h", limit: int = 100):
+async def get_candles_endpoint(asset: str, timeframe: str = "1h", limit: int = 100, source: str = ""):
+    provider = state.secondary_providers.get(source) if source else None
+    if provider is None:
+        provider = state.market_data
     try:
-        candles = await state.market_data.get_candles(asset, timeframe, limit)
+        candles = await provider.get_candles(asset, timeframe, limit)
         return [
             {
                 "time": c.timestamp,
@@ -643,9 +665,15 @@ def _active_pair_list() -> tuple[list[dict], str]:
 
 @router.get("/pairs/suggest")
 async def suggest_pairs() -> dict:
-    """Return top 10 default tradeable pairs for the active broker."""
+    """Return default tradeable pairs for the active broker, plus any secondary providers."""
     pairs, broker = _active_pair_list()
-    return {"broker": broker, "pairs": pairs}
+    # Tag primary pairs with their data source
+    tagged = [dict(p, data_source="") for p in pairs]
+    # Append secondary providers' pairs so the user can chart/analyze them too
+    if "alpaca" in state.secondary_providers:
+        alpaca_tagged = [dict(p, data_source="alpaca") for p in _ALPACA_PAIRS]
+        tagged = tagged + alpaca_tagged
+    return {"broker": broker, "pairs": tagged}
 
 
 @router.get("/pairs/search")
@@ -663,9 +691,16 @@ async def search_pairs(q: str = "") -> dict:
     if isinstance(state.broker, DhanBroker):
         q_up = q.upper()
         found = [
-            p for p in _DHAN_ALL_INSTRUMENTS
+            dict(p, data_source="") for p in _DHAN_ALL_INSTRUMENTS
             if q_up in p["symbol"].upper() or q_up in p["name"].upper()
         ]
+        # Also search Alpaca if it's a secondary provider
+        if "alpaca" in state.secondary_providers:
+            alpaca_found = [
+                dict(p, data_source="alpaca") for p in _ALPACA_PAIRS
+                if q_up in p["symbol"].upper() or q_up in p["name"].upper()
+            ]
+            found = found + alpaca_found
         return {"broker": broker, "pairs": found[:10], "query": q}
 
     q_up = q.upper()
