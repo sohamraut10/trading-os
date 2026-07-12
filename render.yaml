@@ -10,31 +10,68 @@ services:
     runtime: docker
     dockerfilePath: ./infrastructure/Dockerfile
     dockerContext: .
+    # Free tier spins down after 15 min of inactivity.
+    # Upgrade to `starter` ($7/mo) for always-on trading loop.
     plan: free
     numInstances: 1  # AppState (portfolio, event log, websocket clients) is
-                     # process-local — see infrastructure/Dockerfile's
-                     # --workers 1 comment. Do not scale this beyond 1
-                     # instance without first externalizing that state.
+                     # process-local — do not scale beyond 1 without first
+                     # externalizing state to Redis/shared storage.
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
         fromDatabase:
           name: trading-os-db
           property: connectionString
+
+      # ── App ────────────────────────────────────────────────────────────
+      - key: ENVIRONMENT
+        value: production
       - key: MOCK_MODE
-        value: "true"  # flip to "false" once real broker/data-feed keys are set below
+        value: "false"
+      - key: CORS_ALLOWED_ORIGINS
+        value: "*"
+
+      # ── Live trading loop ───────────────────────────────────────────────
+      # Using Dhan (NSE/BSE) — set these to NSE symbols, not crypto.
+      # Change to BTCUSDT,ETHUSDT,... if switching to Binance/Alpaca.
+      - key: ENABLE_LIVE_SUGGESTIONS
+        value: "true"
+      - key: LIVE_SUGGESTIONS_ASSETS
+        value: "RELIANCE,TCS,INFY,HDFCBANK,ICICIBANK"
+      - key: LIVE_SUGGESTIONS_INTERVAL_SEC
+        value: "30.0"
+
+      # ── Secrets — set these in the Render dashboard, not here ──────────
       - key: API_AUTH_TOKEN
-        sync: false   # set in the Render dashboard; protects trade/portfolio-mutation endpoints
+        sync: false   # protects /trade/submit, /portfolio/close, etc.
+
+      # LLM
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+
+      # Dhan broker (Indian markets — takes priority over Alpaca when set)
+      - key: DHAN_CLIENT_ID
+        sync: false
+      - key: DHAN_ACCESS_TOKEN
+        sync: false
+      - key: DHAN_DEFAULT_EXCHANGE
+        sync: false   # NSE_EQ | BSE_EQ | NSE_FNO | IDX_I
+
+      # Alpaca (US equities / paper trading fallback)
       - key: ALPACA_API_KEY
         sync: false
       - key: ALPACA_SECRET_KEY
         sync: false
+
+      # Binance (crypto fallback)
       - key: BINANCE_API_KEY
         sync: false
       - key: BINANCE_SECRET
         sync: false
+
+      # Optional extras
       - key: NEWS_API_KEY
         sync: false
       - key: TELEGRAM_BOT_TOKEN
@@ -42,8 +79,6 @@ services:
       - key: TELEGRAM_CHAT_ID
         sync: false
 
-# Redis and Kafka are both optional (NewsCache and the event bus already
-# fall back to in-memory implementations when unconfigured) and are left
-# out of this Blueprint to keep the default deploy to one paid-free-tier
-# service. Add a Render Key Value instance and set REDIS_URL if you want
-# news-sentiment caching to survive restarts.
+# Redis and Kafka are both optional (in-memory fallback built-in) and are
+# left out to stay within the free tier. Add a Render Key Value service and
+# set REDIS_URL if you want news sentiment caching to survive restarts.
