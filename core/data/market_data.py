@@ -267,6 +267,13 @@ _NSE_SECURITY_ID_MAP: dict[str, str] = {
 # Symbols that map to the IDX_I exchange (Dhan index segment)
 _INDEX_SYMBOLS = frozenset({"NIFTY", "NIFTY50", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY"})
 
+# Dhan daily-bar timestamps are midnight IST (UTC+5:30).
+# lightweight-charts runs in UTC mode, so a bar stamped "July 10 00:00 IST"
+# (= July 9 18:30 UTC) renders on July 9 — one day behind NSE's calendar.
+# Adding the IST offset shifts every daily timestamp to midnight UTC so the
+# chart date matches the NSE trading date.
+_IST_OFFSET_SEC = 19_800  # 5h 30m
+
 
 class DhanProvider(MarketDataProvider):
     """
@@ -382,6 +389,8 @@ class DhanProvider(MarketDataProvider):
             try:
                 ts_val = times[i] if i < len(times) else 0
                 ts = _parse_ts(ts_val) if isinstance(ts_val, str) else float(ts_val)
+                if tf_type == "daily":
+                    ts += _IST_OFFSET_SEC
                 candles.append(OHLCV(
                     timestamp=ts,
                     open=float(opens[i]),
@@ -400,6 +409,9 @@ class DhanProvider(MarketDataProvider):
         security_id = self._resolve_security_id(symbol)
         exchange, _ = self._exchange_and_itype(symbol)
         loop = asyncio.get_event_loop()
+
+        # 1. Real-time quote (requires Dhan market-data subscription; often returns
+        #    status:failure without one — that's expected, we cascade below)
         try:
             raw = await loop.run_in_executor(
                 None,
@@ -413,8 +425,24 @@ class DhanProvider(MarketDataProvider):
                     return float(ltp)
         except Exception:
             pass
-        candles = await self.get_candles(symbol, "1d", 1)
-        return candles[-1].close if candles else 0.0
+
+        # 2. Last 1-minute intraday bar (LTP-accurate; closer than daily VWAP close)
+        try:
+            intraday = await self.get_candles(symbol, "1m", 5)
+            if intraday:
+                return intraday[-1].close
+        except Exception:
+            pass
+
+        # 3. Daily close (official NSE VWAP-based closing price — last resort)
+        try:
+            daily = await self.get_candles(symbol, "1d", 1)
+            if daily:
+                return daily[-1].close
+        except Exception:
+            pass
+
+        return 0.0
 
     async def get_order_book(self, symbol: str, depth: int = 20) -> OrderBook:
         # Dhan v2 has no public L2 orderbook API — return synthetic from LTP

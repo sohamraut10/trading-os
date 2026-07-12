@@ -852,6 +852,67 @@ async def options_chain(symbol: str = "NIFTY", expiry: str = "") -> dict:
         return {"symbol": symbol, "expiry": expiry, "spot": 0.0, "strikes": []}
 
 
+@router.get("/validate/prices")
+async def validate_prices(symbol: str = "RELIANCE") -> dict:
+    """
+    Return the same symbol's price from every available Dhan source so you can
+    compare real-time quote, last intraday bar, and daily VWAP close side-by-side.
+    Only meaningful when DhanProvider is active.
+    """
+    from datetime import datetime, timezone
+    if not isinstance(state.market_data, DhanProvider):
+        return {"error": "validate/prices requires DhanProvider (set DHAN_CLIENT_ID + DHAN_ACCESS_TOKEN)"}
+
+    provider: DhanProvider = state.market_data
+    security_id = provider._resolve_security_id(symbol)
+    exchange, _ = provider._exchange_and_itype(symbol)
+    loop = asyncio.get_event_loop()
+    sources: dict = {}
+
+    # 1. Real-time quote_data
+    try:
+        raw = await loop.run_in_executor(
+            None,
+            lambda: provider._dhan.quote_data({exchange: [security_id]}),
+        )
+        if isinstance(raw, dict) and raw.get("status") == "success":
+            seg = raw.get("data", {}).get(exchange, {})
+            entry = seg.get(security_id) or (list(seg.values())[0] if seg else {})
+            ltp = entry.get("last_price", entry.get("ltp", entry.get("close", 0)))
+            sources["quote_data"] = {"status": "success", "ltp": ltp}
+        else:
+            remarks = raw.get("remarks", "") if isinstance(raw, dict) else str(raw)
+            sources["quote_data"] = {"status": "failure", "remarks": remarks}
+    except Exception as e:
+        sources["quote_data"] = {"status": "error", "error": str(e)}
+
+    # 2. Last 1-minute intraday bar
+    try:
+        bars = await provider.get_candles(symbol, "1m", 5)
+        if bars:
+            last = bars[-1]
+            ts_utc = datetime.fromtimestamp(last.timestamp, tz=timezone.utc).isoformat()
+            sources["last_1m_bar"] = {"status": "success", "close": last.close, "bar_time_utc": ts_utc}
+        else:
+            sources["last_1m_bar"] = {"status": "no_data"}
+    except Exception as e:
+        sources["last_1m_bar"] = {"status": "error", "error": str(e)}
+
+    # 3. Daily VWAP close
+    try:
+        bars = await provider.get_candles(symbol, "1d", 2)
+        if bars:
+            last = bars[-1]
+            date_utc = datetime.fromtimestamp(last.timestamp, tz=timezone.utc).date().isoformat()
+            sources["daily_close"] = {"status": "success", "close": last.close, "date_utc": date_utc}
+        else:
+            sources["daily_close"] = {"status": "no_data"}
+    except Exception as e:
+        sources["daily_close"] = {"status": "error", "error": str(e)}
+
+    return {"symbol": symbol, "security_id": security_id, "exchange": exchange, "sources": sources}
+
+
 app.include_router(router)
 
 
