@@ -71,11 +71,15 @@ def _heuristic_score(headlines: list[str], asset: str) -> tuple[Signal, float, s
 
 
 def _parse_llm_response(raw: str) -> dict:
-    """Extract JSON from potentially noisy LLM output."""
-    match = re.search(r'\{.*\}', raw, re.DOTALL)
+    """Extract JSON from potentially noisy LLM output (handles markdown fences)."""
+    import json
+    if not raw:
+        raise ValueError("Empty LLM response")
+    # Strip ```json ... ``` or ``` ... ``` markdown fences Gemini often adds
+    stripped = re.sub(r"```(?:json)?\s*", "", raw).strip()
+    match = re.search(r'\{.*\}', stripped, re.DOTALL)
     if not match:
         raise ValueError("No JSON found in LLM response")
-    import json
     return json.loads(match.group())
 
 
