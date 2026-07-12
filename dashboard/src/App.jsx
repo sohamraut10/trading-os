@@ -3,12 +3,14 @@ import {
   initialState, eventReducer 
 } from "./eventReducer";
 import { connectEvents } from "./eventsPoller";
-import { 
-  fetchPortfolio, fetchAgentPerformance, pinStrategy, fetchCycleEvents, fetchCandles 
+import {
+  fetchPortfolio, fetchAgentPerformance, pinStrategy, fetchCycleEvents, fetchCandles,
+  fetchPairSuggestions, searchPairs, analyzeAsset
 } from "./api";
 import {
   PipelineTicker, StrategyPicker, DebateTheater, ConsensusBoard,
-  SignalFeed, VetoLog, EquityCurve, Positions, AgentWeights, RegimeBadge, PriceChart
+  SignalFeed, VetoLog, EquityCurve, Positions, AgentWeights, RegimeBadge, PriceChart,
+  PairSelector
 } from "./panels";
 
 export default function App() {
@@ -21,23 +23,55 @@ export default function App() {
   const [equityCurveData, setEquityCurveData] = useState([{ time: "0", equity: 1.0 }]);
   const [candles, setCandles] = useState([]);
   const [mode, setMode] = useState("LIVE");
+  const [selectedAsset, setSelectedAsset] = useState("BTCUSDT");
+  const [pairSuggestions, setPairSuggestions] = useState([]);
+  const [pairBroker, setPairBroker] = useState("");
 
   // Active displayed cycle is either the selected one or the latest current cycle
   const activeCycleId = selectedCycleId || state.currentCycleId;
   const activeCycle = state.cycles[activeCycleId];
 
+  // Load pair suggestions once on mount
   useEffect(() => {
-    const asset = activeCycle?.asset || "BTCUSDT";
+    fetchPairSuggestions()
+      .then((data) => {
+        setPairSuggestions(data.pairs || []);
+        setPairBroker(data.broker || "");
+        if (data.pairs?.length > 0 && !selectedAsset) {
+          setSelectedAsset(data.pairs[0].symbol);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Reload candles whenever the active asset changes (manual selection or live cycle)
+  const displayAsset = activeCycle?.asset || selectedAsset;
+  useEffect(() => {
     async function loadCandles() {
       try {
-        const list = await fetchCandles(asset);
+        const list = await fetchCandles(displayAsset);
         setCandles(list);
       } catch (err) {
         console.error("Failed to load candles:", err);
       }
     }
     loadCandles();
-  }, [activeCycle?.asset]);
+  }, [displayAsset]);
+
+  const handleSelectPair = (pair) => {
+    setSelectedAsset(pair.symbol);
+  };
+
+  const handleAnalyzePair = async (symbol) => {
+    try {
+      const list = await fetchCandles(symbol);
+      setCandles(list);
+      // Fire off analysis — result comes back via the event bus WebSocket
+      analyzeAsset(symbol).catch(() => {});
+    } catch (err) {
+      console.error("Analysis trigger failed:", err);
+    }
+  };
 
   // 1. Event stream (polling /events/recent — works on both Vercel and Docker)
   useEffect(() => {
@@ -167,9 +201,17 @@ export default function App() {
         
         {/* Left Column: Strategy controls & stats */}
         <div className="space-y-6 lg:col-span-1">
-          <StrategyPicker 
-            cycle={activeCycle} 
-            onPin={handlePinStrategy} 
+          <PairSelector
+            suggestions={pairSuggestions}
+            broker={pairBroker}
+            selectedAsset={selectedAsset}
+            onSelect={handleSelectPair}
+            onAnalyze={handleAnalyzePair}
+          />
+
+          <StrategyPicker
+            cycle={activeCycle}
+            onPin={handlePinStrategy}
           />
 
           <EquityCurve 

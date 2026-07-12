@@ -17,10 +17,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from config.settings import settings
-from core.data.market_data import BinanceProvider, AlpacaProvider, MockProvider
+from core.data.market_data import BinanceProvider, AlpacaProvider, DhanProvider, MockProvider
 from core.data.news_feed import NewsFeed
 from core.risk.risk_engine import RiskEngine, PortfolioState
-from core.execution.broker_interface import PaperBroker, SmartOrderRouter, AlpacaBroker
+from core.execution.broker_interface import PaperBroker, SmartOrderRouter, AlpacaBroker, DhanBroker
 from core.backtest.backtester import Backtester
 from core.backtest.optimizer import BacktestOptimizer, ParamGrid
 from core.monitoring.alerts import AlertRouter
@@ -38,12 +38,20 @@ log = logging.getLogger("trading_os.api")
 
 def _build_broker():
     """
-    Real broker credentials are opt-in and best-effort: any failure to
-    construct AlpacaBroker (missing alpaca-trade-api, bad config) falls back
-    to PaperBroker with a warning rather than taking down the whole app at
-    boot — this is exactly the failure mode that happens if ALPACA_API_KEY
-    gets set without alpaca-trade-api installed.
+    Broker priority: Dhan (if DHAN_CLIENT_ID set) → Alpaca (if ALPACA_API_KEY set) → PaperBroker.
+    All failures degrade gracefully to PaperBroker so the app always boots.
     """
+    dhan_configured = bool(settings.dhan_client_id and settings.dhan_access_token)
+    if dhan_configured:
+        try:
+            return DhanBroker(
+                client_id=settings.dhan_client_id,
+                access_token=settings.dhan_access_token,
+                default_exchange=settings.dhan_default_exchange,
+            )
+        except Exception:
+            log.exception("Failed to initialize DhanBroker — falling back to Alpaca/PaperBroker")
+
     alpaca_configured = (
         settings.alpaca_api_key and
         not settings.alpaca_api_key.startswith("your_")
@@ -70,6 +78,16 @@ class AppState:
         self.mock_mode = mock_mode
         if mock_mode:
             self.market_data = MockProvider()
+        elif settings.dhan_client_id and settings.dhan_access_token:
+            try:
+                self.market_data = DhanProvider(
+                    client_id=settings.dhan_client_id,
+                    access_token=settings.dhan_access_token,
+                    default_exchange=settings.dhan_default_exchange,
+                )
+            except Exception:
+                log.exception("Failed to initialize DhanProvider — falling back to BinanceProvider")
+                self.market_data = BinanceProvider(settings.binance_api_key or "", settings.binance_secret or "")
         else:
             self.market_data = BinanceProvider(settings.binance_api_key or "", settings.binance_secret or "")
 
@@ -475,7 +493,7 @@ async def reset_portfolio(_: None = Depends(require_api_key)) -> dict:
 
 @router.post("/trade/submit")
 async def submit_trade(req: TradeRequest, _: None = Depends(require_api_key)):
-    from core.execution.broker_interface import Order, OrderType
+    from core.execution.broker_interface import Order, OrderType, OrderStatus
     price = await state.market_data.get_current_price(req.asset)
 
     risk_result = state.risk.check_manual_order(req.side, req.quantity, price, state.portfolio)
@@ -492,13 +510,15 @@ async def submit_trade(req: TradeRequest, _: None = Depends(require_api_key)):
         limit_price=price,
     )
     filled_order = await state.broker.submit_order(order)
-    state.portfolio.open_trades += 1
-    asyncio.create_task(state.db.snapshot_portfolio(state.portfolio))
+    if filled_order.status == OrderStatus.FILLED:
+        state.portfolio.open_trades += 1
+        asyncio.create_task(state.db.snapshot_portfolio(state.portfolio))
     return {
         "status": filled_order.status.value,
         "avg_fill_price": filled_order.avg_fill_price,
         "quantity": filled_order.filled_qty,
         "side": filled_order.side,
+        "broker_error": filled_order.metadata.get("error"),
         "risk_check": {
             "status": risk_result.status.value,
             "warnings": risk_result.warnings,
@@ -512,26 +532,145 @@ async def close_position(req: ClosePositionRequest, _: None = Depends(require_ap
     positions = await state.broker.get_positions()
     if req.asset not in positions:
         raise HTTPException(status_code=400, detail="No position in this asset")
-    
+
     pos = positions[req.asset]
     from core.execution.broker_interface import Order, OrderType
-    price = await state.market_data.get_current_price(req.asset)
-    order = Order(
-        asset=req.asset,
-        side="sell",
-        quantity=pos["qty"],
-        order_type=OrderType.MARKET,
-        limit_price=price,
-    )
-    filled_order = await state.broker.submit_order(order)
-    state.portfolio.open_trades = max(0, state.portfolio.open_trades - 1)
-    asyncio.create_task(state.db.snapshot_portfolio(state.portfolio))
+
+    # Use Alpaca's native close_position (cancels pending orders atomically)
+    # Fallback to manual market sell for PaperBroker and other adapters
+    if hasattr(state.broker, "close_position_native"):
+        filled_order = await state.broker.close_position_native(req.asset)
+    else:
+        price = await state.market_data.get_current_price(req.asset)
+        order = Order(
+            asset=req.asset,
+            side="sell",
+            quantity=pos["qty"],
+            order_type=OrderType.MARKET,
+            limit_price=price,
+        )
+        filled_order = await state.broker.submit_order(order)
+
+    broker_error = filled_order.metadata.get("error")
+    if not broker_error:
+        state.portfolio.open_trades = max(0, state.portfolio.open_trades - 1)
+        asyncio.create_task(state.db.snapshot_portfolio(state.portfolio))
     return {
-        "status": "closed",
+        "status": "closed" if not broker_error else "failed",
         "asset": req.asset,
         "qty": filled_order.filled_qty,
         "price": filled_order.avg_fill_price,
+        "broker_error": broker_error,
     }
+
+
+# Top-10 default pairs shown in the market selector
+_DHAN_PAIRS = [
+    {"symbol": "NIFTY",      "name": "Nifty 50 Options",           "exchange": "NSE_FNO", "type": "options",  "security_id": "13"},
+    {"symbol": "BANKNIFTY",  "name": "Bank Nifty Options",         "exchange": "NSE_FNO", "type": "options",  "security_id": "25"},
+    {"symbol": "FINNIFTY",   "name": "Fin Nifty Options",          "exchange": "NSE_FNO", "type": "options",  "security_id": "27"},
+    {"symbol": "RELIANCE",   "name": "Reliance Industries",        "exchange": "NSE_EQ",  "type": "equity",   "security_id": "1333"},
+    {"symbol": "TCS",        "name": "Tata Consultancy Services",  "exchange": "NSE_EQ",  "type": "equity",   "security_id": "11536"},
+    {"symbol": "INFY",       "name": "Infosys",                    "exchange": "NSE_EQ",  "type": "equity",   "security_id": "1594"},
+    {"symbol": "HDFCBANK",   "name": "HDFC Bank",                  "exchange": "NSE_EQ",  "type": "equity",   "security_id": "1348"},
+    {"symbol": "ICICIBANK",  "name": "ICICI Bank",                 "exchange": "NSE_EQ",  "type": "equity",   "security_id": "4963"},
+    {"symbol": "SBIN",       "name": "State Bank of India",        "exchange": "NSE_EQ",  "type": "equity",   "security_id": "3045"},
+    {"symbol": "BAJFINANCE", "name": "Bajaj Finance",              "exchange": "NSE_EQ",  "type": "equity",   "security_id": "317"},
+]
+
+# Full searchable NSE instrument list (used by /pairs/search)
+_DHAN_ALL_INSTRUMENTS = _DHAN_PAIRS + [
+    {"symbol": "WIPRO",      "name": "Wipro",                      "exchange": "NSE_EQ",  "type": "equity",   "security_id": "3787"},
+    {"symbol": "TATAMOTORS", "name": "Tata Motors",                "exchange": "NSE_EQ",  "type": "equity",   "security_id": "3456"},
+    {"symbol": "AXISBANK",   "name": "Axis Bank",                  "exchange": "NSE_EQ",  "type": "equity",   "security_id": "5900"},
+    {"symbol": "KOTAKBANK",  "name": "Kotak Mahindra Bank",        "exchange": "NSE_EQ",  "type": "equity",   "security_id": "1922"},
+    {"symbol": "MARUTI",     "name": "Maruti Suzuki",              "exchange": "NSE_EQ",  "type": "equity",   "security_id": "10999"},
+    {"symbol": "BHARTIARTL", "name": "Bharti Airtel",              "exchange": "NSE_EQ",  "type": "equity",   "security_id": "10604"},
+    {"symbol": "ASIANPAINT", "name": "Asian Paints",               "exchange": "NSE_EQ",  "type": "equity",   "security_id": "236"},
+    {"symbol": "LT",         "name": "Larsen & Toubro",            "exchange": "NSE_EQ",  "type": "equity",   "security_id": "11483"},
+    {"symbol": "TITAN",      "name": "Titan Company",              "exchange": "NSE_EQ",  "type": "equity",   "security_id": "3506"},
+    {"symbol": "SUNPHARMA",  "name": "Sun Pharmaceutical",         "exchange": "NSE_EQ",  "type": "equity",   "security_id": "3351"},
+    {"symbol": "HCLTECH",    "name": "HCL Technologies",           "exchange": "NSE_EQ",  "type": "equity",   "security_id": "1363"},
+    {"symbol": "TATASTEEL",  "name": "Tata Steel",                 "exchange": "NSE_EQ",  "type": "equity",   "security_id": "3499"},
+    {"symbol": "NTPC",       "name": "NTPC",                       "exchange": "NSE_EQ",  "type": "equity",   "security_id": "11630"},
+    {"symbol": "ONGC",       "name": "ONGC",                       "exchange": "NSE_EQ",  "type": "equity",   "security_id": "11543"},
+    {"symbol": "POWERGRID",  "name": "Power Grid Corp",            "exchange": "NSE_EQ",  "type": "equity",   "security_id": "14977"},
+    {"symbol": "DRREDDY",    "name": "Dr. Reddy's Laboratories",   "exchange": "NSE_EQ",  "type": "equity",   "security_id": "881"},
+    {"symbol": "BAJAJFINSV", "name": "Bajaj Finserv",              "exchange": "NSE_EQ",  "type": "equity",   "security_id": "16669"},
+    {"symbol": "DIVISLAB",   "name": "Divi's Laboratories",        "exchange": "NSE_EQ",  "type": "equity",   "security_id": "15414"},
+    {"symbol": "HINDUNILVR", "name": "Hindustan Unilever",         "exchange": "NSE_EQ",  "type": "equity",   "security_id": "1394"},
+    {"symbol": "ADANIENT",   "name": "Adani Enterprises",          "exchange": "NSE_EQ",  "type": "equity",   "security_id": "1253"},
+    {"symbol": "ADANIPORTS", "name": "Adani Ports & SEZ",          "exchange": "NSE_EQ",  "type": "equity",   "security_id": "15083"},
+    # Index data (for charting; trade via NSE_FNO contracts)
+    {"symbol": "NIFTY50",    "name": "Nifty 50 Index",             "exchange": "IDX_I",   "type": "index",    "security_id": "13"},
+    {"symbol": "BANKNIFTY",  "name": "Bank Nifty Index",           "exchange": "IDX_I",   "type": "index",    "security_id": "25"},
+]
+
+_ALPACA_PAIRS = [
+    {"symbol": "AAPL",   "name": "Apple Inc.",       "exchange": "NASDAQ", "type": "equity"},
+    {"symbol": "MSFT",   "name": "Microsoft Corp.",  "exchange": "NASDAQ", "type": "equity"},
+    {"symbol": "NVDA",   "name": "NVIDIA Corp.",     "exchange": "NASDAQ", "type": "equity"},
+    {"symbol": "TSLA",   "name": "Tesla Inc.",       "exchange": "NASDAQ", "type": "equity"},
+    {"symbol": "AMZN",   "name": "Amazon.com Inc.",  "exchange": "NASDAQ", "type": "equity"},
+    {"symbol": "GOOGL",  "name": "Alphabet Inc.",    "exchange": "NASDAQ", "type": "equity"},
+    {"symbol": "META",   "name": "Meta Platforms",   "exchange": "NASDAQ", "type": "equity"},
+    {"symbol": "BTCUSD", "name": "Bitcoin / USD",    "exchange": "CRYPTO", "type": "crypto"},
+    {"symbol": "ETHUSD", "name": "Ethereum / USD",   "exchange": "CRYPTO", "type": "crypto"},
+    {"symbol": "SPY",    "name": "S&P 500 ETF",      "exchange": "NYSE",   "type": "etf"},
+]
+
+_BINANCE_PAIRS = [
+    {"symbol": "BTCUSDT",  "name": "Bitcoin / USDT",   "exchange": "BINANCE", "type": "crypto"},
+    {"symbol": "ETHUSDT",  "name": "Ethereum / USDT",  "exchange": "BINANCE", "type": "crypto"},
+    {"symbol": "SOLUSDT",  "name": "Solana / USDT",    "exchange": "BINANCE", "type": "crypto"},
+    {"symbol": "BNBUSDT",  "name": "BNB / USDT",       "exchange": "BINANCE", "type": "crypto"},
+    {"symbol": "XRPUSDT",  "name": "XRP / USDT",       "exchange": "BINANCE", "type": "crypto"},
+    {"symbol": "DOGEUSDT", "name": "Dogecoin / USDT",  "exchange": "BINANCE", "type": "crypto"},
+    {"symbol": "ADAUSDT",  "name": "Cardano / USDT",   "exchange": "BINANCE", "type": "crypto"},
+    {"symbol": "AVAXUSDT", "name": "Avalanche / USDT", "exchange": "BINANCE", "type": "crypto"},
+    {"symbol": "DOTUSDT",  "name": "Polkadot / USDT",  "exchange": "BINANCE", "type": "crypto"},
+    {"symbol": "MATICUSDT","name": "Polygon / USDT",   "exchange": "BINANCE", "type": "crypto"},
+]
+
+
+def _active_pair_list() -> tuple[list[dict], str]:
+    if isinstance(state.broker, DhanBroker):
+        return _DHAN_PAIRS, "DhanBroker"
+    if isinstance(state.broker, AlpacaBroker):
+        return _ALPACA_PAIRS, "AlpacaBroker"
+    return _BINANCE_PAIRS, "PaperBroker"
+
+
+@router.get("/pairs/suggest")
+async def suggest_pairs() -> dict:
+    """Return top 10 default tradeable pairs for the active broker."""
+    pairs, broker = _active_pair_list()
+    return {"broker": broker, "pairs": pairs}
+
+
+@router.get("/pairs/search")
+async def search_pairs(q: str = "") -> dict:
+    """
+    Search for trading pairs. Delegates to Dhan's search API when Dhan is
+    the active broker; otherwise filters the static suggestion list.
+    """
+    q = q.strip()
+    pairs, broker = _active_pair_list()
+
+    if not q:
+        return {"broker": broker, "pairs": pairs, "query": ""}
+
+    if isinstance(state.broker, DhanBroker):
+        q_up = q.upper()
+        found = [
+            p for p in _DHAN_ALL_INSTRUMENTS
+            if q_up in p["symbol"].upper() or q_up in p["name"].upper()
+        ]
+        return {"broker": broker, "pairs": found[:10], "query": q}
+
+    q_up = q.upper()
+    filtered = [p for p in pairs if q_up in p["symbol"].upper() or q_up in p["name"].upper()]
+    return {"broker": broker, "pairs": filtered, "query": q}
 
 
 class StrategySelectRequest(BaseModel):

@@ -220,6 +220,215 @@ class BinanceProvider(MarketDataProvider):
         return OrderBook(bids=bids, asks=asks, timestamp=time.time())
 
 
+_NSE_SECURITY_ID_MAP: dict[str, str] = {
+    # NSE Equities
+    "RELIANCE":    "1333",
+    "TCS":         "11536",
+    "INFY":        "1594",
+    "HDFCBANK":    "1348",
+    "ICICIBANK":   "4963",
+    "HINDUNILVR":  "1394",
+    "SBIN":        "3045",
+    "BAJFINANCE":  "317",
+    "WIPRO":       "3787",
+    "TATAMOTORS":  "3456",
+    "AXISBANK":    "5900",
+    "KOTAKBANK":   "1922",
+    "MARUTI":      "10999",
+    "NTPC":        "11630",
+    "ONGC":        "11543",
+    "BHARTIARTL":  "10604",
+    "ASIANPAINT":  "236",
+    "LT":          "11483",
+    "TITAN":       "3506",
+    "SUNPHARMA":   "3351",
+    "HCLTECH":     "1363",
+    "TATASTEEL":   "3499",
+    "BAJAJFINSV":  "16669",
+    "NESTLEIND":   "17963",
+    "POWERGRID":   "14977",
+    "DIVISLAB":    "15414",
+    "DRREDDY":     "881",
+    "EICHERMOT":   "910",
+    "GRASIM":      "1232",
+    "JSWSTEEL":    "11723",
+    "ADANIENT":    "1253",
+    "ADANIPORTS":  "15083",
+    "ULTRACEMCO":  "2344",
+    # Indices (IDX_I exchange, instrument_type=INDEX)
+    "NIFTY":       "13",
+    "NIFTY50":     "13",
+    "BANKNIFTY":   "25",
+    "FINNIFTY":    "27",
+    "NIFTYNXT50":  "26",
+    "MIDCPNIFTY":  "442",
+}
+
+# Symbols that map to the IDX_I exchange (Dhan index segment)
+_INDEX_SYMBOLS = frozenset({"NIFTY", "NIFTY50", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY"})
+
+
+class DhanProvider(MarketDataProvider):
+    """
+    Dhan market-data provider for Indian markets (NSE/BSE equities, F&O, indices).
+
+    Candle intervals supported by Dhan historical API:
+      intraday  → 1, 5, 15, 25, 60  (minutes)
+      daily     → "D"
+
+    Timeframe strings accepted: "1m", "5m", "15m", "25m", "1h", "1d"
+
+    Symbol resolution: pass a numeric security_id directly or a ticker like
+    "RELIANCE" — resolved via the static NSE instrument map and cached.
+    Index symbols (NIFTY, BANKNIFTY, etc.) automatically use the IDX_I exchange.
+    """
+
+    _TF_MAP = {
+        "1m":  ("intraday", 1),
+        "5m":  ("intraday", 5),
+        "15m": ("intraday", 15),
+        "25m": ("intraday", 25),
+        "1h":  ("intraday", 60),
+        "1d":  ("daily",    "D"),
+    }
+
+    def __init__(
+        self,
+        client_id: str,
+        access_token: str,
+        default_exchange: str = "NSE_EQ",
+        instrument_type: str = "EQUITY",
+    ):
+        try:
+            import dhanhq as _dh
+            ctx = _dh.DhanContext(client_id, access_token)
+            self._dhan = _dh.dhanhq(ctx)
+        except ImportError:
+            raise RuntimeError("dhanhq is not installed — run `pip install dhanhq`")
+        self._default_exchange = default_exchange
+        self._instrument_type = instrument_type
+        self._symbol_cache: dict[str, str] = {}
+
+    def _resolve_security_id(self, symbol: str) -> str:
+        if symbol.lstrip("-").isdigit():
+            return symbol
+        upper = symbol.upper()
+        if upper in self._symbol_cache:
+            return self._symbol_cache[upper]
+        sid = _NSE_SECURITY_ID_MAP.get(upper)
+        if sid:
+            self._symbol_cache[upper] = sid
+            return sid
+        return symbol
+
+    def _exchange_and_itype(self, symbol: str) -> tuple[str, str]:
+        """Return (exchange_segment, instrument_type) for a symbol."""
+        upper = symbol.upper()
+        if upper in _INDEX_SYMBOLS:
+            return "IDX_I", "INDEX"
+        return self._default_exchange, self._instrument_type
+
+    async def get_candles(self, symbol: str, timeframe: str, limit: int = 300) -> list[OHLCV]:
+        import asyncio
+        from datetime import datetime, timedelta
+
+        security_id = self._resolve_security_id(symbol)
+        exchange, itype = self._exchange_and_itype(symbol)
+        tf_type, tf_interval = self._TF_MAP.get(timeframe, ("intraday", 60))
+
+        now = datetime.now()
+        if tf_type == "daily":
+            from_dt = now - timedelta(days=limit * 2)
+        else:
+            minutes_needed = limit * int(tf_interval)
+            from_dt = now - timedelta(minutes=minutes_needed * 1.5 + 60)
+
+        from_date = from_dt.strftime("%Y-%m-%d")
+        to_date = now.strftime("%Y-%m-%d")
+
+        loop = asyncio.get_event_loop()
+        try:
+            if tf_type == "daily":
+                raw = await loop.run_in_executor(
+                    None,
+                    lambda: self._dhan.historical_daily_data(
+                        security_id, exchange, itype, from_date, to_date,
+                    ),
+                )
+            else:
+                raw = await loop.run_in_executor(
+                    None,
+                    lambda: self._dhan.intraday_minute_data(
+                        security_id, exchange, itype, from_date, to_date,
+                        interval=int(tf_interval),
+                    ),
+                )
+        except Exception as e:
+            raise RuntimeError(f"DhanProvider.get_candles failed for {symbol}: {e}") from e
+
+        raw_data = raw.get("data") if isinstance(raw, dict) else None
+        data = raw_data if isinstance(raw_data, dict) else {}
+        if not data and isinstance(raw, dict) and raw.get("status") == "failure":
+            raise RuntimeError(f"Dhan API error: {raw.get('remarks', raw)}")
+        opens  = data.get("open",      [])
+        highs  = data.get("high",      [])
+        lows   = data.get("low",       [])
+        closes = data.get("close",     [])
+        vols   = data.get("volume",    [0] * len(opens))
+        times  = data.get("timestamp", [])
+
+        candles = []
+        for i in range(len(opens)):
+            try:
+                ts_val = times[i] if i < len(times) else 0
+                ts = _parse_ts(ts_val) if isinstance(ts_val, str) else float(ts_val)
+                candles.append(OHLCV(
+                    timestamp=ts,
+                    open=float(opens[i]),
+                    high=float(highs[i]),
+                    low=float(lows[i]),
+                    close=float(closes[i]),
+                    volume=float(vols[i]) if i < len(vols) else 0.0,
+                ))
+            except Exception:
+                continue
+
+        return candles[-limit:]
+
+    async def get_current_price(self, symbol: str) -> float:
+        import asyncio
+        security_id = self._resolve_security_id(symbol)
+        exchange, _ = self._exchange_and_itype(symbol)
+        loop = asyncio.get_event_loop()
+        try:
+            raw = await loop.run_in_executor(
+                None,
+                lambda: self._dhan.quote_data({exchange: [security_id]}),
+            )
+            if isinstance(raw, dict) and raw.get("status") == "success":
+                seg_data = raw.get("data", {}).get(exchange, {})
+                entry = seg_data.get(security_id) or (list(seg_data.values())[0] if seg_data else {})
+                ltp = entry.get("last_price", entry.get("ltp", entry.get("close", 0)))
+                if ltp:
+                    return float(ltp)
+        except Exception:
+            pass
+        candles = await self.get_candles(symbol, "1d", 1)
+        return candles[-1].close if candles else 0.0
+
+    async def get_order_book(self, symbol: str, depth: int = 20) -> OrderBook:
+        # Dhan v2 has no public L2 orderbook API — return synthetic from LTP
+        price = await self.get_current_price(symbol)
+        bids = [OrderBookLevel(price=price * (1 - 0.0001 * (i + 1)), size=100.0) for i in range(depth)]
+        asks = [OrderBookLevel(price=price * (1 + 0.0001 * (i + 1)), size=100.0) for i in range(depth)]
+        return OrderBook(bids=bids, asks=asks, timestamp=time.time())
+
+    async def stream_price(self, symbol: str) -> AsyncIterator[float]:
+        while True:
+            yield await self.get_current_price(symbol)
+            await asyncio.sleep(1)
+
+
 class MockProvider(MarketDataProvider):
     """
     Deterministic mock for testing — generates realistic synthetic OHLCV using GBM.
