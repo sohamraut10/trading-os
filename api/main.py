@@ -17,10 +17,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from config.settings import settings
-from core.data.market_data import BinanceProvider, AlpacaProvider, DhanProvider, MockProvider
+from core.data.market_data import BinanceProvider, AlpacaProvider, DhanProvider, MockProvider, _INDEX_SYMBOLS
 from core.data.news_feed import NewsFeed
 from core.risk.risk_engine import RiskEngine, PortfolioState
-from core.execution.broker_interface import PaperBroker, SmartOrderRouter, AlpacaBroker, DhanBroker
+from core.execution.broker_interface import PaperBroker, SmartOrderRouter, AlpacaBroker, DhanBroker, _NSE_SECURITY_ID_MAP
 from core.backtest.backtester import Backtester
 from core.backtest.optimizer import BacktestOptimizer, ParamGrid
 from core.monitoring.alerts import AlertRouter
@@ -760,6 +760,96 @@ async def ws_signals(websocket: WebSocket):
     except WebSocketDisconnect:
         if websocket in state._ws_clients:
             state._ws_clients.remove(websocket)
+
+
+@router.get("/options/expiries")
+async def options_expiries(symbol: str = "NIFTY") -> dict:
+    """Return available expiry dates for an options underlying via Dhan."""
+    if not isinstance(state.broker, DhanBroker):
+        return {"expiries": []}
+    upper = symbol.strip().upper()
+    security_id = _NSE_SECURITY_ID_MAP.get(upper)
+    if not security_id:
+        return {"expiries": []}
+    exchange = "IDX_I" if upper in _INDEX_SYMBOLS else "NSE_EQ"
+    try:
+        loop = asyncio.get_event_loop()
+        raw = await loop.run_in_executor(
+            None, lambda: state.broker._dhan.expiry_list(int(security_id), exchange)
+        )
+        expiries = raw.get("data", {}).get("data", [])
+        return {"expiries": expiries}
+    except Exception:
+        log.exception("Failed to fetch expiry list for %s", symbol)
+        return {"expiries": []}
+
+
+@router.get("/options/chain")
+async def options_chain(symbol: str = "NIFTY", expiry: str = "") -> dict:
+    """Return option chain near ATM (±15 strikes) via Dhan."""
+    if not isinstance(state.broker, DhanBroker):
+        return {"symbol": symbol, "expiry": expiry, "spot": 0.0, "strikes": []}
+    upper = symbol.strip().upper()
+    security_id = _NSE_SECURITY_ID_MAP.get(upper)
+    if not security_id or not expiry:
+        return {"symbol": symbol, "expiry": expiry, "spot": 0.0, "strikes": []}
+    exchange = "IDX_I" if upper in _INDEX_SYMBOLS else "NSE_EQ"
+    try:
+        loop = asyncio.get_event_loop()
+        raw = await loop.run_in_executor(
+            None, lambda: state.broker._dhan.option_chain(int(security_id), exchange, expiry)
+        )
+        chain_data = raw.get("data", {}).get("data", {})
+        spot = float(chain_data.get("last_price", 0.0))
+        oc = chain_data.get("oc", {})
+
+        # Parse all strikes and sort them
+        all_strikes = []
+        for strike_str, legs in oc.items():
+            try:
+                strike_val = float(strike_str)
+            except ValueError:
+                continue
+            ce = legs.get("ce", {}) or {}
+            pe = legs.get("pe", {}) or {}
+            all_strikes.append({
+                "strike": strike_val,
+                "ce": {
+                    "security_id": ce.get("security_id"),
+                    "ltp": ce.get("last_price", 0.0),
+                    "oi": ce.get("oi", 0),
+                    "iv": ce.get("implied_volatility", 0.0),
+                    "delta": (ce.get("greeks") or {}).get("delta", 0.0),
+                    "volume": ce.get("volume", 0),
+                },
+                "pe": {
+                    "security_id": pe.get("security_id"),
+                    "ltp": pe.get("last_price", 0.0),
+                    "oi": pe.get("oi", 0),
+                    "iv": pe.get("implied_volatility", 0.0),
+                    "delta": (pe.get("greeks") or {}).get("delta", 0.0),
+                    "volume": pe.get("volume", 0),
+                },
+            })
+
+        all_strikes.sort(key=lambda s: s["strike"])
+
+        # Find ATM index and slice ±15 strikes
+        if all_strikes and spot > 0:
+            atm_idx = min(
+                range(len(all_strikes)),
+                key=lambda i: abs(all_strikes[i]["strike"] - spot),
+            )
+            lo = max(0, atm_idx - 15)
+            hi = min(len(all_strikes), atm_idx + 16)
+            near_strikes = all_strikes[lo:hi]
+        else:
+            near_strikes = all_strikes
+
+        return {"symbol": upper, "expiry": expiry, "spot": spot, "strikes": near_strikes}
+    except Exception:
+        log.exception("Failed to fetch option chain for %s %s", symbol, expiry)
+        return {"symbol": symbol, "expiry": expiry, "spot": 0.0, "strikes": []}
 
 
 app.include_router(router)

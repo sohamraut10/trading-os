@@ -49,6 +49,18 @@ export async function searchPairs(query) {
   return res.json();
 }
 
+export async function fetchOptionExpiries(symbol) {
+  const res = await fetch(`${API_URL}/options/expiries?symbol=${encodeURIComponent(symbol)}`);
+  if (!res.ok) return { expiries: [] };
+  return res.json();
+}
+
+export async function fetchOptionChain(symbol, expiry) {
+  const res = await fetch(`${API_URL}/options/chain?symbol=${encodeURIComponent(symbol)}&expiry=${encodeURIComponent(expiry)}`);
+  if (!res.ok) return { spot: 0, strikes: [] };
+  return res.json();
+}
+
 export async function analyzeAsset(asset, timeframe = "1h", candle_limit = 100) {
   const res = await fetch(`${API_URL}/analyze`, {
     method: "POST",
