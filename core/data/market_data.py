@@ -70,13 +70,27 @@ class AlpacaProvider(MarketDataProvider):
 
     async def get_current_price(self, symbol: str) -> float:
         import aiohttp
+        # Try quotes endpoint first (live during market hours)
         url = f"https://data.alpaca.markets/v2/stocks/{symbol}/quotes/latest"
-        async with aiohttp.ClientSession(headers=self._headers) as session:
-            async with session.get(url) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
-        q = data.get("quote", {})
-        return (q.get("ap", 0) + q.get("bp", 0)) / 2 or q.get("ap", 0)
+        try:
+            async with aiohttp.ClientSession(headers=self._headers) as session:
+                async with session.get(url) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json()
+            q = data.get("quote", {})
+            # ap/bp can be "" (empty string) when the market is closed
+            try:
+                ap = float(q.get("ap") or 0)
+                bp = float(q.get("bp") or 0)
+            except (TypeError, ValueError):
+                ap = bp = 0.0
+            if ap or bp:
+                return (ap + bp) / 2 if ap and bp else (ap or bp)
+        except Exception:
+            pass
+        # Fallback: last bar close (works after-hours and on weekends)
+        candles = await self.get_candles(symbol, "1d", 1)
+        return candles[-1].close if candles else 0.0
 
     async def get_order_book(self, symbol: str, depth: int = 20) -> OrderBook:
         # Alpaca doesn't provide L2 for free — return synthetic from quote
