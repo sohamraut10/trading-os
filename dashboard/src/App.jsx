@@ -5,12 +5,12 @@ import {
 import { connectEvents } from "./eventsPoller";
 import {
   fetchPortfolio, fetchAgentPerformance, pinStrategy, fetchCycleEvents, fetchCandles,
-  fetchPairSuggestions, searchPairs, analyzeAsset
+  fetchPairSuggestions, searchPairs, analyzeAsset, fetchOptionExpiries, fetchOptionChain
 } from "./api";
 import {
   PipelineTicker, StrategyPicker, DebateTheater, ConsensusBoard,
   SignalFeed, VetoLog, EquityCurve, Positions, AgentWeights, RegimeBadge, PriceChart,
-  PairSelector
+  PairSelector, OptionsChain
 } from "./panels";
 
 export default function App() {
@@ -26,6 +26,7 @@ export default function App() {
   const [selectedAsset, setSelectedAsset] = useState("BTCUSDT");
   const [pairSuggestions, setPairSuggestions] = useState([]);
   const [pairBroker, setPairBroker] = useState("");
+  const [selectedPair, setSelectedPair] = useState(null);
 
   // Active displayed cycle is either the selected one or the latest current cycle
   const activeCycleId = selectedCycleId || state.currentCycleId;
@@ -60,6 +61,12 @@ export default function App() {
 
   const handleSelectPair = (pair) => {
     setSelectedAsset(pair.symbol);
+    setSelectedPair(pair);
+  };
+
+  const handleSelectContract = (contract) => {
+    // contract = {symbol, strike, type, security_id, expiry}
+    setSelectedAsset(contract.symbol); // keep underlying for candle display
   };
 
   const handleAnalyzePair = async (symbol) => {
@@ -226,6 +233,11 @@ export default function App() {
 
         {/* Center/Right Columns: Core Decision Theater */}
         <div className="space-y-6 lg:col-span-2">
+          {/* Options Chain (only for options-type pairs) */}
+          {selectedPair?.type === "options" && (
+            <OptionsChain symbol={selectedPair.symbol} onSelectContract={handleSelectContract} />
+          )}
+
           {/* Live Price Chart */}
           <PriceChart cycle={activeCycle} candles={candles} />
 

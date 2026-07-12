@@ -15,6 +15,7 @@ export default defineConfig({
       '/candles': 'http://localhost:8000',
       '/pairs': 'http://localhost:8000',
       '/analyze': 'http://localhost:8000',
+      '/options': 'http://localhost:8000',
       '/events': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
       '/ws': {
