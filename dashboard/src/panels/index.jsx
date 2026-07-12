@@ -313,19 +313,19 @@ export function ConsensusBoard({ cycle }) {
         <div>
           <span className="text-[10px] text-slate-500 uppercase font-mono block">Approved Position Size</span>
           <span className="text-base font-bold font-mono text-indigo-400">
-            {isApproved ? `$${risk.approved_size_pct ? (risk.approved_size_pct * 100).toFixed(2) : "0.00"}%` : "0.00%"}
+            {isApproved ? `${risk.approved_size_pct ? (risk.approved_size_pct * 100).toFixed(2) : "0.00"}%` : "0.00%"}
           </span>
         </div>
         <div>
           <span className="text-[10px] text-slate-500 uppercase font-mono block">Stop Loss (SL)</span>
           <span className="text-base font-bold font-mono text-red-400">
-            {isApproved ? `$${risk.stop_loss_price?.toLocaleString()}` : "N/A"}
+            {isApproved ? `₹${risk.stop_loss_price?.toLocaleString()}` : "N/A"}
           </span>
         </div>
         <div>
           <span className="text-[10px] text-slate-500 uppercase font-mono block">Take Profit (TP)</span>
           <span className="text-base font-bold font-mono text-emerald-400">
-            {isApproved ? `$${risk.take_profit_price?.toLocaleString()}` : "N/A"}
+            {isApproved ? `₹${risk.take_profit_price?.toLocaleString()}` : "N/A"}
           </span>
         </div>
       </div>
@@ -466,7 +466,7 @@ export function EquityCurve({ data, stats }) {
       <div className="flex justify-between items-start mb-4">
         <div>
           <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block">Performance Curve</span>
-          <span className="text-lg font-bold font-mono text-slate-200">${stats?.equity?.toLocaleString() || "100,000.00"}</span>
+          <span className="text-lg font-bold font-mono text-slate-200">₹{stats?.equity?.toLocaleString() || "1,00,000.00"}</span>
         </div>
         <div className="text-right">
           <span className="text-[10px] text-slate-500 uppercase font-mono block">Day Return</span>
@@ -525,8 +525,8 @@ export function Positions({ positions }) {
                 <tr key={idx} className="border-b border-slate-800/40">
                   <td className="py-2.5 font-bold text-slate-300">{pos.asset}</td>
                   <td className="py-2.5 text-slate-400">{pos.qty.toFixed(4)}</td>
-                  <td className="py-2.5 text-slate-400">${pos.avg_price?.toLocaleString()}</td>
-                  <td className="py-2.5 text-slate-300">${pos.value?.toLocaleString()}</td>
+                  <td className="py-2.5 text-slate-400">₹{pos.avg_price?.toLocaleString()}</td>
+                  <td className="py-2.5 text-slate-300">₹{pos.value?.toLocaleString()}</td>
                   <td className={`py-2.5 text-right font-bold ${pos.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
                     {pos.pnl >= 0 ? "+" : ""}{pos.pnl?.toFixed(2)}%
                   </td>
