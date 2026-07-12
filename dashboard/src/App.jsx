@@ -27,6 +27,7 @@ export default function App() {
   const [pairSuggestions, setPairSuggestions] = useState([]);
   const [pairBroker, setPairBroker] = useState("");
   const [selectedPair, setSelectedPair] = useState(null);
+  const [selectedDataSource, setSelectedDataSource] = useState("");
 
   // Active displayed cycle is either the selected one or the latest current cycle
   const activeCycleId = selectedCycleId || state.currentCycleId;
@@ -45,23 +46,24 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  // Reload candles whenever the active asset changes (manual selection or live cycle)
+  // Reload candles whenever the active asset or data source changes
   const displayAsset = activeCycle?.asset || selectedAsset;
   useEffect(() => {
     async function loadCandles() {
       try {
-        const list = await fetchCandles(displayAsset);
+        const list = await fetchCandles(displayAsset, selectedDataSource);
         setCandles(list);
       } catch (err) {
         console.error("Failed to load candles:", err);
       }
     }
     loadCandles();
-  }, [displayAsset]);
+  }, [displayAsset, selectedDataSource]);
 
   const handleSelectPair = (pair) => {
     setSelectedAsset(pair.symbol);
     setSelectedPair(pair);
+    setSelectedDataSource(pair.data_source || "");
   };
 
   const handleSelectContract = (contract) => {
@@ -71,7 +73,7 @@ export default function App() {
 
   const handleAnalyzePair = async (symbol) => {
     try {
-      const list = await fetchCandles(symbol);
+      const list = await fetchCandles(symbol, selectedDataSource);
       setCandles(list);
       // Fire off analysis — result comes back via the event bus WebSocket
       analyzeAsset(symbol).catch(() => {});

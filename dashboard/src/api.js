@@ -31,8 +31,10 @@ export async function fetchCycleEvents(cycleId) {
   return res.json();
 }
 
-export async function fetchCandles(asset) {
-  const res = await fetch(`${API_URL}/candles?asset=${asset}&timeframe=1h&limit=100`);
+export async function fetchCandles(asset, source = "") {
+  const params = new URLSearchParams({ asset, timeframe: "1h", limit: 100 });
+  if (source) params.set("source", source);
+  const res = await fetch(`${API_URL}/candles?${params}`);
   if (!res.ok) throw new Error("Failed to fetch candles");
   return res.json();
 }

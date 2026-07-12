@@ -703,11 +703,12 @@ export function PairSelector({ suggestions, broker, selectedAsset, onSelect, onA
         {displayPairs.length === 0 && query ? (
           <div className="col-span-2 text-center text-slate-600 text-xs font-mono py-3">No results for "{query}"</div>
         ) : (
-          displayPairs.slice(0, 10).map((pair) => {
+          displayPairs.slice(0, 20).map((pair) => {
             const isSelected = pair.symbol === selectedAsset;
+            const srcLabel = pair.data_source === "alpaca" ? "ALPACA" : null;
             return (
               <button
-                key={pair.symbol}
+                key={`${pair.symbol}-${pair.data_source || "primary"}`}
                 onClick={() => onSelect(pair)}
                 className={`flex items-center justify-between gap-1 rounded-lg px-2.5 py-2 border transition text-left ${
                   isSelected
@@ -723,6 +724,11 @@ export function PairSelector({ suggestions, broker, selectedAsset, onSelect, onA
                   <span className={`text-[9px] font-mono border rounded px-1 ${typeColor(pair.type)}`}>
                     {pair.type?.toUpperCase() || "EQ"}
                   </span>
+                  {srcLabel && (
+                    <span className="text-[8px] font-mono text-sky-400 bg-sky-500/10 border border-sky-500/20 rounded px-1">
+                      {srcLabel}
+                    </span>
+                  )}
                   {isSelected && <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 shadow shadow-indigo-400/60" />}
                 </div>
               </button>
