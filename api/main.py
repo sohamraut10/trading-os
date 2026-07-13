@@ -465,6 +465,7 @@ async def prometheus_metrics():
         consecutive_losses=state.portfolio.consecutive_losses,
         circuit_breaker=state.portfolio.daily_pnl_pct <= -state.risk.cfg.max_daily_drawdown,
     )
+    trading_metrics.update_system()
     return Response(content=trading_metrics.render(), media_type="text/plain; version=0.0.4")
 
 
