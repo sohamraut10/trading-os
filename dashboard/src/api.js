@@ -72,3 +72,9 @@ export async function analyzeAsset(asset, timeframe = "1h", candle_limit = 100) 
   if (!res.ok) throw new Error("Analysis failed");
   return res.json();
 }
+
+export async function fetchSystem() {
+  const res = await fetch(`${API_URL}/system`);
+  if (!res.ok) return { ram_used_gb: 0, ram_total_gb: 8, ram_pct: 0, cpu_pct: 0, disk_pct: 0 };
+  return res.json();
+}

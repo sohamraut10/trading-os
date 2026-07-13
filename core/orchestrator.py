@@ -177,6 +177,22 @@ class Orchestrator:
                 self._data.get_current_price(self.asset),
             )
 
+            # Fallback: brokers like Dhan limit intraday history to ~5 trading
+            # days (~31 1h bars for NSE). When that's below what agents need,
+            # retry with daily candles so Technical/Quant can still run.
+            _MIN_CANDLES_NEEDED = 60
+            if len(candles) < _MIN_CANDLES_NEEDED and self.timeframe != "1d":
+                try:
+                    daily = await self._data.get_candles(self.asset, "1d", self._candle_limit)
+                    if len(daily) >= _MIN_CANDLES_NEEDED:
+                        log.info(
+                            "%s: only %d %s candles — falling back to %d daily bars",
+                            self.asset, len(candles), self.timeframe, len(daily),
+                        )
+                        candles = daily
+                except Exception:
+                    pass
+
             # Emit BarClosed — the dashboard's event reducer seeds a new
             # cycle's `asset` field from whichever event arrives first for
             # that cycle_id, and this is the only event carrying it.

@@ -97,6 +97,9 @@ class Settings(BaseSettings):
     enable_live_suggestions: bool = True
     live_suggestions_assets: str = "BTCUSDT,ETHUSDT,SOLUSDT,EURUSD,GBPUSD,USDJPY"
     live_suggestions_interval_sec: float = 15.0
+    # When True, the live-suggestions loop will fire real orders when consensus
+    # produces a BUY/SELL signal. Keep False (default) until manually enabled.
+    auto_execute_signals: bool = False
 
     # Shared secret required on the Authorization header of POST /cron/tick.
     # Empty disables the endpoint entirely (fails closed, unlike api_auth_token).
