@@ -313,6 +313,12 @@ class DhanProvider(MarketDataProvider):
         "1d":  ("daily",    "D"),
     }
 
+    # Candle cache: key = (symbol, timeframe, limit) → (fetched_at, candles)
+    _candle_cache: dict = {}
+    _CANDLE_TTL_SEC = 60          # reuse cached bars for 60 s
+    _last_request_at: float = 0.0 # shared rate-limit guard
+    _MIN_REQUEST_GAP = 1.1        # seconds between Dhan API calls
+
     def __init__(
         self,
         client_id: str,
@@ -351,7 +357,19 @@ class DhanProvider(MarketDataProvider):
 
     async def get_candles(self, symbol: str, timeframe: str, limit: int = 300) -> list[OHLCV]:
         import asyncio
+        import time as _time
         from datetime import datetime, timedelta
+
+        # Return cached bars if still fresh
+        cache_key = (symbol.upper(), timeframe, limit)
+        cached = self._candle_cache.get(cache_key)
+        if cached and (_time.monotonic() - cached[0]) < self._CANDLE_TTL_SEC:
+            return cached[1]
+
+        # Throttle: enforce minimum gap between Dhan API calls
+        gap = self._MIN_REQUEST_GAP - (_time.monotonic() - self.__class__._last_request_at)
+        if gap > 0:
+            await asyncio.sleep(gap)
 
         security_id = self._resolve_security_id(symbol)
         exchange, itype = self._exchange_and_itype(symbol)
@@ -368,29 +386,39 @@ class DhanProvider(MarketDataProvider):
         to_date = now.strftime("%Y-%m-%d")
 
         loop = asyncio.get_event_loop()
-        try:
-            if tf_type == "daily":
-                raw = await loop.run_in_executor(
-                    None,
-                    lambda: self._dhan.historical_daily_data(
-                        security_id, exchange, itype, from_date, to_date,
-                    ),
-                )
-            else:
-                raw = await loop.run_in_executor(
-                    None,
-                    lambda: self._dhan.intraday_minute_data(
-                        security_id, exchange, itype, from_date, to_date,
-                        interval=int(tf_interval),
-                    ),
-                )
-        except Exception as e:
-            raise RuntimeError(f"DhanProvider.get_candles failed for {symbol}: {e}") from e
+        for attempt in range(3):
+            try:
+                self.__class__._last_request_at = _time.monotonic()
+                if tf_type == "daily":
+                    raw = await loop.run_in_executor(
+                        None,
+                        lambda: self._dhan.historical_daily_data(
+                            security_id, exchange, itype, from_date, to_date,
+                        ),
+                    )
+                else:
+                    raw = await loop.run_in_executor(
+                        None,
+                        lambda: self._dhan.intraday_minute_data(
+                            security_id, exchange, itype, from_date, to_date,
+                            interval=int(tf_interval),
+                        ),
+                    )
+            except Exception as e:
+                raise RuntimeError(f"DhanProvider.get_candles failed for {symbol}: {e}") from e
 
-        raw_data = raw.get("data") if isinstance(raw, dict) else None
-        data = raw_data if isinstance(raw_data, dict) else {}
-        if not data and isinstance(raw, dict) and raw.get("status") == "failure":
-            raise RuntimeError(f"Dhan API error: {raw.get('remarks', raw)}")
+            raw_data = raw.get("data") if isinstance(raw, dict) else None
+            data = raw_data if isinstance(raw_data, dict) else {}
+            if not data and isinstance(raw, dict) and raw.get("status") == "failure":
+                remarks = raw.get("remarks", {})
+                err_code = remarks.get("error_code", "") if isinstance(remarks, dict) else str(remarks)
+                if err_code == "DH-904" and attempt < 2:
+                    # Rate limit — back off and retry
+                    await asyncio.sleep(2.0 * (attempt + 1))
+                    continue
+                raise RuntimeError(f"Dhan API error: {remarks}")
+            break  # success
+
         opens  = data.get("open",      [])
         highs  = data.get("high",      [])
         lows   = data.get("low",       [])
@@ -416,7 +444,9 @@ class DhanProvider(MarketDataProvider):
             except Exception:
                 continue
 
-        return candles[-limit:]
+        result = candles[-limit:]
+        self._candle_cache[cache_key] = (_time.monotonic(), result)
+        return result
 
     async def get_current_price(self, symbol: str) -> float:
         import asyncio
