@@ -139,44 +139,49 @@ function ProgressBar({ pct, color = "bg-blue-500" }) {
 
 function PriceChart({ asset, source }) {
   const containerRef = useRef(null);
-  const chartRef = useRef(null);
-  const seriesRef = useRef(null);
+  const chartRef     = useRef(null);
+  const seriesRef    = useRef(null);
   const [loading, setLoading] = useState(false);
+  const [err, setErr]         = useState(null);
+  const [bars, setBars]       = useState(0);
 
+  // Init chart once; use autoSize so it fills its CSS-sized container
   useEffect(() => {
     if (!containerRef.current) return;
     const chart = createChart(containerRef.current, {
+      autoSize: true,
       layout: { background: { color: '#0a0a0a' }, textColor: '#525252' },
-      grid: { vertLines: { color: '#171717' }, horzLines: { color: '#171717' } },
+      grid:   { vertLines: { color: '#171717' }, horzLines: { color: '#171717' } },
       rightPriceScale: { borderColor: '#262626' },
       timeScale: { borderColor: '#262626', timeVisible: true, secondsVisible: false },
-      width: containerRef.current.clientWidth,
-      height: 200,
     });
     const series = chart.addCandlestickSeries({
       upColor: '#34d399', downColor: '#f87171',
       borderVisible: false, wickUpColor: '#34d399', wickDownColor: '#f87171',
     });
-    chartRef.current = chart;
+    chartRef.current  = chart;
     seriesRef.current = series;
-
-    const ro = new ResizeObserver(e => chart.resize(e[0].contentRect.width, 200));
-    ro.observe(containerRef.current);
-    return () => { ro.disconnect(); chart.remove(); };
+    return () => chart.remove();
   }, []);
 
+  // Fetch candles whenever asset changes
   useEffect(() => {
-    if (!seriesRef.current || !asset) return;
+    if (!asset) return;
     setLoading(true);
+    setErr(null);
     fetchCandles(asset, source)
-      .then(bars => {
-        const data = bars
-          .filter(c => c.time && c.open)
-          .map(c => ({ time: Math.floor(c.time), open: c.open, high: c.high, low: c.low, close: c.close }))
+      .then(raw => {
+        if (!Array.isArray(raw)) throw new Error(raw?.detail || 'API error');
+        const data = raw
+          .filter(c => c.time && c.open && c.high && c.low && c.close)
+          .map(c => ({ time: Math.floor(c.time), open: +c.open, high: +c.high, low: +c.low, close: +c.close }))
           .sort((a, b) => a.time - b.time);
-        if (data.length) { seriesRef.current.setData(data); chartRef.current.timeScale().fitContent(); }
+        if (!data.length) throw new Error('No candles returned');
+        seriesRef.current?.setData(data);
+        chartRef.current?.timeScale().fitContent();
+        setBars(data.length);
       })
-      .catch(() => {})
+      .catch(e => setErr(e.message || 'Failed to load chart data'))
       .finally(() => setLoading(false));
   }, [asset, source]);
 
@@ -186,10 +191,30 @@ function PriceChart({ asset, source }) {
         <h2 className="text-xs font-bold text-neutral-300 uppercase tracking-wider flex items-center gap-2">
           <BarChart2 className="h-3.5 w-3.5 text-neutral-500" />
           {asset} · 1H Candlestick
+          {bars > 0 && <span className="text-neutral-600 font-normal">{bars} bars</span>}
         </h2>
         {loading && <span className="text-[10px] text-neutral-500 animate-pulse">loading…</span>}
+        {err && !loading && (
+          <span className="text-[10px] text-amber-500 max-w-xs truncate" title={err}>
+            ⚠ {err.includes('DH-901') || err.includes('expired') || err.includes('invalid')
+              ? 'Dhan token expired — refresh at dhanhq.co'
+              : err}
+          </span>
+        )}
       </div>
-      <div ref={containerRef} />
+      {/* explicit height so autoSize has a non-zero container to fill */}
+      <div ref={containerRef} style={{ height: 220 }}>
+        {!loading && err && (
+          <div className="h-full flex flex-col items-center justify-center gap-2 text-neutral-600">
+            <BarChart2 className="h-8 w-8 opacity-30" />
+            <p className="text-xs text-center px-4">
+              {err.includes('DH-901') || err.includes('expired') || err.includes('invalid')
+                ? <>Dhan access token expired.<br/>Regenerate at <span className="text-amber-500">dhanhq.co → My Account → API Access</span>, then update <code>.env.prod</code> and restart the api container.</>
+                : err}
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

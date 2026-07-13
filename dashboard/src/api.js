@@ -35,7 +35,10 @@ export async function fetchCandles(asset, source = "") {
   const params = new URLSearchParams({ asset, timeframe: "1h", limit: 100 });
   if (source) params.set("source", source);
   const res = await fetch(`${API_URL}/candles?${params}`);
-  if (!res.ok) throw new Error("Failed to fetch candles");
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `HTTP ${res.status}`);
+  }
   return res.json();
 }
 
