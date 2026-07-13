@@ -171,6 +171,7 @@ class Orchestrator:
         t0 = time.perf_counter()
         request_id = str(uuid.uuid4())
         self._cycle_count += 1
+        log.info("CYCLE START — %s execute=%s", self.asset, _execute)
 
         try:
             # ── 1. Fetch data (parallel) ──────────────────────────────────────
@@ -338,6 +339,9 @@ class Orchestrator:
                 })
 
                 # ── 9. Execution ──────────────────────────────────────────────
+                log.info("EXEC GATE — %s fd=%s strat_ok=%s tradeable=%s execute=%s",
+                         self.asset, signal.final_decision, strat_ok,
+                         risk_result.is_tradeable(), _execute)
                 if _execute and risk_result.is_tradeable():
                     size_mult = strategy.position_size_multiplier(signal, ctx)
                     risk_result.approved_position_size_usd *= size_mult
