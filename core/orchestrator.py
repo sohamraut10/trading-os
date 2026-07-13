@@ -165,7 +165,9 @@ class Orchestrator:
     def stop(self) -> None:
         self._running = False
 
-    async def run_cycle(self) -> CycleResult:
+    async def run_cycle(self, execute: bool | None = None) -> CycleResult:
+        # Caller can override per-call; fall back to instance flag set at construction
+        _execute = execute if execute is not None else self._auto_execute
         t0 = time.perf_counter()
         request_id = str(uuid.uuid4())
         self._cycle_count += 1
@@ -336,7 +338,7 @@ class Orchestrator:
                 })
 
                 # ── 9. Execution ──────────────────────────────────────────────
-                if self._auto_execute and risk_result.is_tradeable():
+                if _execute and risk_result.is_tradeable():
                     size_mult = strategy.position_size_multiplier(signal, ctx)
                     risk_result.approved_position_size_usd *= size_mult
                     risk_result.approved_position_size_pct *= size_mult
@@ -363,7 +365,7 @@ class Orchestrator:
                         "size_usd": risk_result.approved_position_size_usd,
                         "price": price
                     })
-                elif self._auto_execute and not risk_result.is_tradeable():
+                elif _execute and not risk_result.is_tradeable():
                     log.info("EXEC SKIP (risk) — %s | status=%s reasons=%s", self.asset, risk_result.status.value, risk_result.rejection_reasons)
 
             # ── 10. Learning loop ─────────────────────────────────────────────

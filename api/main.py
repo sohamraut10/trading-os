@@ -239,10 +239,9 @@ def _get_or_create_orchestrator(asset: str, timeframe: str, candle_limit: int) -
 
 async def run_consensus_cycle(asset: str, timeframe: str, candle_limit: int, execute_if_signal: bool) -> dict:
     orch = _get_or_create_orchestrator(asset, timeframe, candle_limit)
-    orch._auto_execute = execute_if_signal
     orch._strategy_override = state.pinned_strategy
 
-    result = await orch.run_cycle()
+    result = await orch.run_cycle(execute=execute_if_signal)
     if result.error:
         return {"error": result.error, "asset": asset, "request_id": result.request_id}
 
