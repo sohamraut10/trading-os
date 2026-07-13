@@ -45,7 +45,7 @@
         header {
             X-Frame-Options         "DENY"
             Permissions-Policy      "geolocation=(), microphone=(), camera=()"
-            Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://api.{$DOMAIN} wss://api.{$DOMAIN}; font-src 'self' data:; frame-ancestors 'none';"
+            Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://s3.tradingview.com https://s3.tradingview.com; style-src 'self' 'unsafe-inline' https://s3.tradingview.com; img-src 'self' data: https:; connect-src 'self' https://api.{$DOMAIN} wss://api.{$DOMAIN} https://*.tradingview.com wss://*.tradingview.com; font-src 'self' data: https://s3.tradingview.com; frame-src https://*.tradingview.com; worker-src blob:; frame-ancestors 'none';"
         }
         reverse_proxy frontend:80 {
             health_uri      /nginx-health
