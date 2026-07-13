@@ -4,7 +4,8 @@ import {
   Server, Terminal, Cpu, Globe, Database, Lock, Zap, ChevronDown,
   RefreshCw, AlertTriangle, CheckCircle, Search,
 } from 'lucide-react';
-import { fetchPortfolio, fetchPairSuggestions, analyzeAsset, fetchSystem } from './api';
+import { createChart } from 'lightweight-charts';
+import { fetchPortfolio, fetchPairSuggestions, analyzeAsset, fetchSystem, fetchCandles } from './api';
 import { connectEvents } from './eventsPoller';
 
 // ── constants ─────────────────────────────────────────────────────────────────
@@ -26,20 +27,6 @@ const COLOR = {
 };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-
-function toTVSymbol(symbol) {
-  if (!symbol) return "NSE:NIFTY50";
-  const s = symbol.toUpperCase();
-  if (s.endsWith("USDT"))  return `BINANCE:${s}`;
-  if (s.endsWith("BUSD"))  return `BINANCE:${s}`;
-  if (s === "BTCUSD")      return "COINBASE:BTCUSD";
-  if (s.length === 6 && /^(EUR|GBP|AUD|NZD|USD|JPY|CAD|CHF)/.test(s)) return `FX_IDC:${s}`;
-  if (["NIFTY", "NIFTY50"].includes(s)) return "NSE:NIFTY50";
-  if (s === "BANKNIFTY")  return "NSE:BANKNIFTY";
-  if (["AAPL","MSFT","NVDA","TSLA","AMZN","GOOGL","META"].includes(s)) return `NASDAQ:${s}`;
-  if (["SPY","QQQ","IWM"].includes(s)) return `AMEX:${s}`;
-  return `NSE:${s}`;
-}
 
 function fmtMoney(val, currency = "INR") {
   const sym = currency === "USD" ? "$" : "₹";
@@ -68,36 +55,85 @@ function signalBg(action) {
   return "bg-amber-500/10 border-amber-500/30 text-amber-400";
 }
 
-// ── TradingView chart ─────────────────────────────────────────────────────────
-// Direct iframe — same URL TradingView's embed scripts generate internally.
-// Free tier (15-min delayed), works for NSE without a subscription.
+// ── Candlestick chart (lightweight-charts + Dhan candle data) ─────────────────
 
-const TV_STUDIES = encodeURIComponent(
-  "RSI@tv-basicstudies,MACD@tv-basicstudies,Volume@tv-basicstudies,BB@tv-basicstudies"
-);
+function PriceChart({ asset, source }) {
+  const containerRef = useRef(null);
+  const chartRef     = useRef(null);
+  const seriesRef    = useRef(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr]         = useState(null);
+  const [bars, setBars]       = useState(0);
 
-function TradingViewChart({ symbol }) {
-  const tvSymbol = toTVSymbol(symbol);
-  const src =
-    "https://www.tradingview.com/widgetembed/?" +
-    "symbol=" + encodeURIComponent(tvSymbol) +
-    "&interval=60&timezone=Asia%2FKolkata&theme=dark&style=1&locale=en" +
-    "&withdateranges=1&hidesidetoolbar=0&saveimage=1&allow_symbol_change=1" +
-    "&studies=" + TV_STUDIES;
+  // init chart once on mount
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const chart = createChart(containerRef.current, {
+      autoSize: true,
+      layout: { background: { color: "#0a0a0a" }, textColor: "#525252" },
+      grid:   { vertLines: { color: "#171717" }, horzLines: { color: "#171717" } },
+      rightPriceScale: { borderColor: "#262626" },
+      timeScale: { borderColor: "#262626", timeVisible: true, secondsVisible: false },
+    });
+    const series = chart.addCandlestickSeries({
+      upColor: "#34d399", downColor: "#f87171",
+      borderVisible: false, wickUpColor: "#34d399", wickDownColor: "#f87171",
+    });
+    chartRef.current  = chart;
+    seriesRef.current = series;
+    return () => chart.remove();
+  }, []);
+
+  // fetch candles when asset changes
+  useEffect(() => {
+    if (!asset) return;
+    setLoading(true);
+    setErr(null);
+    fetchCandles(asset, source)
+      .then(raw => {
+        if (!Array.isArray(raw)) throw new Error(raw?.detail || "API error");
+        const data = raw
+          .filter(c => c.time && c.open && c.high && c.low && c.close)
+          .map(c => ({ time: Math.floor(c.time), open: +c.open, high: +c.high, low: +c.low, close: +c.close }))
+          .sort((a, b) => a.time - b.time);
+        if (!data.length) throw new Error("No candles returned");
+        seriesRef.current?.setData(data);
+        chartRef.current?.timeScale().fitContent();
+        setBars(data.length);
+      })
+      .catch(e => setErr(e.message || "Failed to load chart data"))
+      .finally(() => setLoading(false));
+  }, [asset, source]);
+
+  const tokenErr = err && (err.includes("DH-901") || err.includes("expired") || err.includes("invalid"));
 
   return (
-    <div
-      className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden"
-      style={{ height: 460 }}
-    >
-      <iframe
-        key={tvSymbol}
-        src={src}
-        title="TradingView Chart"
-        style={{ width: "100%", height: "100%", border: "none" }}
-        allow="clipboard-write"
-        referrerPolicy="no-referrer-when-downgrade"
-      />
+    <div className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden">
+      <div className="px-4 py-3 border-b border-neutral-800 flex justify-between items-center">
+        <h2 className="text-xs font-bold text-neutral-300 uppercase tracking-wider flex items-center gap-2">
+          <BarChart2 className="h-3.5 w-3.5 text-neutral-500" />
+          {asset} · 1H Candlestick
+          {bars > 0 && <span className="text-neutral-600 font-normal">{bars} bars</span>}
+        </h2>
+        {loading && <span className="text-[10px] text-neutral-500 animate-pulse">loading…</span>}
+        {err && !loading && (
+          <span className="text-[10px] text-amber-500 max-w-xs truncate" title={err}>
+            ⚠ {tokenErr ? "Dhan token expired — refresh at dhanhq.co" : err}
+          </span>
+        )}
+      </div>
+      <div ref={containerRef} style={{ height: 400 }}>
+        {!loading && err && (
+          <div className="h-full flex flex-col items-center justify-center gap-2 text-neutral-600">
+            <BarChart2 className="h-8 w-8 opacity-30" />
+            <p className="text-xs text-center px-6">
+              {tokenErr
+                ? <>Token expired. Regenerate at <span className="text-amber-500">dhanhq.co → My Account → API Access</span>, update <code>.env.prod</code>, restart api container.</>
+                : err}
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -494,20 +530,9 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── TradingView Chart (full width) ── */}
+      {/* ── Candlestick Chart (full width) ── */}
       <div className="px-5 pt-5 pb-4">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-bold text-white">{selected.symbol}</span>
-            <span className="text-[10px] text-neutral-600">{toTVSymbol(selected.symbol)}</span>
-          </div>
-          {analyzing && (
-            <span className="text-[10px] text-neutral-500 animate-pulse flex items-center gap-1">
-              <RefreshCw className="h-3 w-3 animate-spin" /> analyzing…
-            </span>
-          )}
-        </div>
-        <TradingViewChart symbol={selected.symbol} />
+        <PriceChart asset={selected.symbol} source={selected.data_source} />
       </div>
 
       {/* ── 3-Column Analysis Grid ── */}
