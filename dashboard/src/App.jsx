@@ -3,7 +3,8 @@ import {
   Activity, BarChart2, Brain, ShieldAlert, TrendingUp,
   Server, Terminal, Cpu, Globe, Database, Lock, Zap, ChevronDown,
 } from 'lucide-react';
-import { fetchPortfolio, fetchPairSuggestions, analyzeAsset, fetchSystem } from './api';
+import { createChart } from 'lightweight-charts';
+import { fetchPortfolio, fetchPairSuggestions, analyzeAsset, fetchSystem, fetchCandles } from './api';
 import { connectEvents } from './eventsPoller';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -132,6 +133,63 @@ function ProgressBar({ pct, color = "bg-blue-500" }) {
   return (
     <div className="h-1 w-full bg-neutral-800 rounded-full overflow-hidden">
       <div className={`h-full ${color} transition-all duration-500`} style={{ width: `${Math.min(pct, 100)}%` }} />
+    </div>
+  );
+}
+
+function PriceChart({ asset, source }) {
+  const containerRef = useRef(null);
+  const chartRef = useRef(null);
+  const seriesRef = useRef(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const chart = createChart(containerRef.current, {
+      layout: { background: { color: '#0a0a0a' }, textColor: '#525252' },
+      grid: { vertLines: { color: '#171717' }, horzLines: { color: '#171717' } },
+      rightPriceScale: { borderColor: '#262626' },
+      timeScale: { borderColor: '#262626', timeVisible: true, secondsVisible: false },
+      width: containerRef.current.clientWidth,
+      height: 200,
+    });
+    const series = chart.addCandlestickSeries({
+      upColor: '#34d399', downColor: '#f87171',
+      borderVisible: false, wickUpColor: '#34d399', wickDownColor: '#f87171',
+    });
+    chartRef.current = chart;
+    seriesRef.current = series;
+
+    const ro = new ResizeObserver(e => chart.resize(e[0].contentRect.width, 200));
+    ro.observe(containerRef.current);
+    return () => { ro.disconnect(); chart.remove(); };
+  }, []);
+
+  useEffect(() => {
+    if (!seriesRef.current || !asset) return;
+    setLoading(true);
+    fetchCandles(asset, source)
+      .then(bars => {
+        const data = bars
+          .filter(c => c.time && c.open)
+          .map(c => ({ time: Math.floor(c.time), open: c.open, high: c.high, low: c.low, close: c.close }))
+          .sort((a, b) => a.time - b.time);
+        if (data.length) { seriesRef.current.setData(data); chartRef.current.timeScale().fitContent(); }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [asset, source]);
+
+  return (
+    <div className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden">
+      <div className="px-4 py-3 border-b border-neutral-800 flex justify-between items-center">
+        <h2 className="text-xs font-bold text-neutral-300 uppercase tracking-wider flex items-center gap-2">
+          <BarChart2 className="h-3.5 w-3.5 text-neutral-500" />
+          {asset} · 1H Candlestick
+        </h2>
+        {loading && <span className="text-[10px] text-neutral-500 animate-pulse">loading…</span>}
+      </div>
+      <div ref={containerRef} />
     </div>
   );
 }
@@ -291,6 +349,9 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {/* ── Price Chart (full width) ── */}
+      <PriceChart asset={selectedAsset} source={selectedSource} />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
