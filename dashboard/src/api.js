@@ -31,8 +31,8 @@ export async function fetchCycleEvents(cycleId) {
   return res.json();
 }
 
-export async function fetchCandles(asset, source = "") {
-  const params = new URLSearchParams({ asset, timeframe: "1h", limit: 100 });
+export async function fetchCandles(asset, source = "", timeframe = "1h", limit = 100) {
+  const params = new URLSearchParams({ asset, timeframe, limit });
   if (source) params.set("source", source);
   const res = await fetch(`${API_URL}/candles?${params}`);
   if (!res.ok) {
