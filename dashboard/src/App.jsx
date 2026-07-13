@@ -56,63 +56,35 @@ function SignalIcon({ action, size = 14 }) {
 }
 
 // ── TradingView chart ─────────────────────────────────────────────────────────
-// Uses the Advanced Chart embed widget (free, works with NSE/BSE data)
-// instead of tv.js Widget API which blocks NSE behind a subscription.
+// Direct iframe embed — same mechanism TradingView's own scripts use internally.
+// Works for NSE/BSE on the free tier (15-min delayed). key={tvSymbol} forces
+// React to remount the iframe on symbol change rather than keeping a stale src.
+
+const TV_STUDIES = encodeURIComponent(
+  "RSI@tv-basicstudies,MACD@tv-basicstudies,Volume@tv-basicstudies,BB@tv-basicstudies"
+);
 
 function TradingViewChart({ symbol }) {
-  const containerRef = useRef(null);
   const tvSymbol = toTVSymbol(symbol);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el || !tvSymbol) return;
-    el.innerHTML = "";
-
-    const widgetDiv = document.createElement("div");
-    widgetDiv.className = "tradingview-widget-container__widget";
-    widgetDiv.style.cssText = "height:100%;width:100%";
-    el.appendChild(widgetDiv);
-
-    const script = document.createElement("script");
-    script.type = "text/javascript";
-    script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
-    script.async = true;
-    script.textContent = JSON.stringify({
-      autosize: true,
-      symbol: tvSymbol,
-      interval: "60",
-      timezone: "Asia/Kolkata",
-      theme: "dark",
-      style: "1",
-      locale: "en",
-      toolbar_bg: "#171717",
-      enable_publishing: false,
-      withdateranges: true,
-      allow_symbol_change: true,
-      save_image: true,
-      studies: [
-        "RSI@tv-basicstudies",
-        "MACD@tv-basicstudies",
-        "Volume@tv-basicstudies",
-        "BB@tv-basicstudies",
-      ],
-      show_popup_button: true,
-      backgroundColor: "rgba(10,10,10,1)",
-      details: true,
-      hotlist: true,
-      calendar: false,
-    });
-    el.appendChild(script);
-
-    return () => { el.innerHTML = ""; };
-  }, [tvSymbol]);
+  const src =
+    "https://www.tradingview.com/widgetembed/?" +
+    "symbol=" + encodeURIComponent(tvSymbol) +
+    "&interval=60&timezone=Asia%2FKolkata&theme=dark&style=1&locale=en" +
+    "&withdateranges=1&hidesidetoolbar=0&saveimage=1&allow_symbol_change=1" +
+    "&studies=" + TV_STUDIES;
 
   return (
-    <div className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden" style={{ height: 540 }}>
-      <div
-        ref={containerRef}
-        className="tradingview-widget-container"
-        style={{ height: "100%", width: "100%" }}
+    <div
+      className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden"
+      style={{ height: 540 }}
+    >
+      <iframe
+        key={tvSymbol}
+        src={src}
+        title="TradingView Chart"
+        style={{ width: "100%", height: "100%", border: "none" }}
+        allow="clipboard-write"
+        referrerPolicy="no-referrer-when-downgrade"
       />
     </div>
   );
