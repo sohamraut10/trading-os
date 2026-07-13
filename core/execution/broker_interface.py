@@ -75,7 +75,16 @@ _NSE_SECURITY_ID_MAP: dict[str, str] = {
     "FINNIFTY":    "27",
     "NIFTYNXT50":  "26",
     "MIDCPNIFTY":  "442",
+    # MCX Commodities — Near-month contract IDs (update monthly on expiry)
+    "NATURALGAS":  "10",    # MCX Natural Gas near-month (Dhan security ID for NATGAS)
+    "CRUDEOIL":    "11",    # MCX Crude Oil near-month
+    "GOLD":        "626",   # MCX Gold near-month
+    "SILVER":      "635",   # MCX Silver near-month
 }
+
+
+_INDEX_SYMBOLS = frozenset({"NIFTY", "NIFTY50", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY"})
+_MCX_SYMBOLS = frozenset({"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"})
 
 
 class OrderType(str, Enum):
@@ -389,10 +398,18 @@ class DhanBroker(BrokerAdapter):
         # Last resort: return symbol unchanged (works when user passes raw ID)
         return symbol
 
+    def _exchange_for_symbol(self, symbol: str) -> str:
+        upper = symbol.upper()
+        if upper in _INDEX_SYMBOLS:
+            return "IDX_I"
+        if upper in _MCX_SYMBOLS:
+            return "MCX_COMM"
+        return self._default_exchange
+
     async def submit_order(self, order: Order) -> Order:
         loop = asyncio.get_event_loop()
         security_id = order.metadata.get("security_id") or self._resolve_security_id(order.asset)
-        exchange = order.metadata.get("exchange", self._default_exchange)
+        exchange = order.metadata.get("exchange") or self._exchange_for_symbol(order.asset)
         dhan_order_type = self._ORDER_TYPE_MAP.get(order.order_type, "MARKET")
         price = order.limit_price or 0
         trigger_price = order.stop_price or 0
