@@ -60,10 +60,13 @@ class AlertRouter:
 
     def __init__(self, alerters=None):
         self._alerters = alerters or [ConsoleAlerter()]
+        self._telegram_alerters: list[TelegramAlerter] = []
 
     def add_telegram(self, token: str, chat_id: str) -> None:
         if token and chat_id:
-            self._alerters.append(TelegramAlerter(token, chat_id))
+            t = TelegramAlerter(token, chat_id)
+            self._alerters.append(t)
+            self._telegram_alerters.append(t)
 
     async def signal_generated(self, signal: TradeSignal) -> None:
         if signal.final_decision:
@@ -78,14 +81,19 @@ class AlertRouter:
                 asset=signal.asset,
                 trade_id=signal.request_id,
             )
+            # TRUE signals go to all channels including Telegram
+            await self._broadcast(alert)
         else:
-            alert = Alert(
-                level="info",
-                title=f"FALSE SIGNAL — {signal.asset} (rejected)",
-                body=f"Reason: {signal.reason[:200]}",
-                asset=signal.asset,
+            # FALSE signals only go to console — Telegram stays quiet
+            await asyncio.gather(
+                *[a.send(Alert(
+                    level="info",
+                    title=f"FALSE SIGNAL — {signal.asset} (rejected)",
+                    body=f"Reason: {signal.reason[:200]}",
+                    asset=signal.asset,
+                )) for a in self._alerters if isinstance(a, ConsoleAlerter)],
+                return_exceptions=True,
             )
-        await self._broadcast(alert)
 
     async def circuit_breaker(self, reason: str) -> None:
         await self._broadcast(Alert(
