@@ -4,12 +4,15 @@ Translates TradeSignal + RiskCheckResult into actual market orders.
 Implements smart order routing: limit orders first, market orders as fallback.
 """
 import asyncio
+import logging
 import time
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 from core.agents.base_agent import Signal
 from core.agents.meta_agent import TradeSignal
@@ -396,6 +399,8 @@ class DhanBroker(BrokerAdapter):
         transaction_type = "BUY" if order.side.lower() == "buy" else "SELL"
         qty = max(1, int(order.quantity))
 
+        log.info("DHAN ORDER — %s %s %s qty=%d price=%.2f trigger=%.2f sid=%s",
+                 transaction_type, dhan_order_type, order.asset, qty, price, trigger_price, security_id)
         try:
             result = await loop.run_in_executor(
                 None,
@@ -411,10 +416,12 @@ class DhanBroker(BrokerAdapter):
                 ),
             )
             resp = result if isinstance(result, dict) else {}
+            log.info("DHAN RESPONSE — %s", resp)
             order_id = resp.get("data", {}).get("orderId", "") if isinstance(resp.get("data"), dict) else str(resp.get("orderId", ""))
             order.broker_order_id = order_id
             order.status = OrderStatus.SUBMITTED
         except Exception as e:
+            log.exception("DHAN SUBMIT ERROR — %s %s: %s", order.asset, transaction_type, e)
             order.status = OrderStatus.REJECTED
             order.metadata["error"] = str(e)
         return order

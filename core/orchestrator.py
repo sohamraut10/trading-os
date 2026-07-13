@@ -341,10 +341,21 @@ class Orchestrator:
                     risk_result.approved_position_size_usd *= size_mult
                     risk_result.approved_position_size_pct *= size_mult
 
-                    await self._router.execute_bracket(signal, risk_result, price)
-                    self._portfolio.open_trades += 1
-                    executed = True
-                    
+                    log.info(
+                        "EXECUTING — %s %s | size=₹%.0f (%.1f%%) | sl=%.2f tp=%.2f",
+                        self.asset, signal.action,
+                        risk_result.approved_position_size_usd,
+                        risk_result.approved_position_size_pct * 100,
+                        risk_result.stop_loss_price, risk_result.take_profit_price,
+                    )
+                    try:
+                        await self._router.execute_bracket(signal, risk_result, price)
+                        self._portfolio.open_trades += 1
+                        executed = True
+                        log.info("ORDER PLACED — %s %s ₹%.0f @ %.2f", self.asset, signal.action, risk_result.approved_position_size_usd, price)
+                    except Exception as exc:
+                        log.exception("EXECUTION ERROR — %s %s: %s", self.asset, signal.action, exc)
+
                     # Emit OrderPlaced
                     await self._bus.publish("OrderPlaced", request_id, {
                         "asset": self.asset,
@@ -352,6 +363,8 @@ class Orchestrator:
                         "size_usd": risk_result.approved_position_size_usd,
                         "price": price
                     })
+                elif self._auto_execute and not risk_result.is_tradeable():
+                    log.info("EXEC SKIP (risk) — %s | status=%s reasons=%s", self.asset, risk_result.status.value, risk_result.rejection_reasons)
 
             # ── 10. Learning loop ─────────────────────────────────────────────
             if signal.final_decision and signal.action:
