@@ -434,6 +434,11 @@ class DhanBroker(BrokerAdapter):
             )
             resp = result if isinstance(result, dict) else {}
             log.info("DHAN RESPONSE — %s", resp)
+            if resp.get("status") == "failure":
+                remarks = resp.get("remarks", {})
+                err_code = remarks.get("error_code", "UNKNOWN") if isinstance(remarks, dict) else str(remarks)
+                err_msg = remarks.get("error_message", "") if isinstance(remarks, dict) else ""
+                raise RuntimeError(f"{err_code}: {err_msg}")
             order_id = resp.get("data", {}).get("orderId", "") if isinstance(resp.get("data"), dict) else str(resp.get("orderId", ""))
             order.broker_order_id = order_id
             order.status = OrderStatus.SUBMITTED
@@ -580,6 +585,8 @@ class SmartOrderRouter:
 
         # Submit entry
         entry = await self._broker.submit_order(entry)
+        if entry.status == OrderStatus.REJECTED:
+            raise RuntimeError(f"Entry order rejected: {entry.metadata.get('error', 'unknown')}")
 
         # Wait for fill or timeout → fallback to market
         if entry.status == OrderStatus.SUBMITTED:

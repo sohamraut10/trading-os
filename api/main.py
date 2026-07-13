@@ -11,6 +11,12 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s [%(name)s] %(message)s",
+    force=True,
+)
+
 from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, Response, Depends, Header
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -298,20 +304,22 @@ async def lifespan(app: FastAPI):
         state.portfolio.equity = float(snapshot["equity"])
         state.portfolio.cash = float(snapshot["cash"])
         state.portfolio.daily_pnl_pct = float(snapshot["daily_pnl_pct"])
-        state.portfolio.open_trades = int(snapshot["open_trades"])
-        # /portfolio, /health, and /metrics all read equity/cash from the
-        # broker's own ledger, not from state.portfolio — for PaperBroker
-        # (the default with no Alpaca key) that ledger is otherwise just as
-        # in-memory-only as state.portfolio was, so it needs the same resume.
-        # Only cash can be restored: PaperBroker derives reported equity as
-        # cash + open-positions-value, and per-symbol positions aren't
-        # captured in portfolio_snapshots, so open positions — and any
-        # unrealized P&L they represented — are still lost across a cold
-        # start. Equity will read as (resumed cash + 0 positions) until a
-        # new trade opens a position again.
+        # Do NOT restore open_trades from snapshot — it can drift if positions
+        # are closed externally (e.g., Dhan auto-squareoff) or if prior orders
+        # failed silently. Always re-sync from the broker's live position count.
         if isinstance(state.broker, PaperBroker):
             state.broker._cash = state.portfolio.cash
         log.info("Resumed portfolio from snapshot: equity=%.2f", state.portfolio.equity)
+
+    # Sync open_trades from the broker's actual live positions so the risk
+    # engine never blocks trading due to a stale in-memory counter.
+    try:
+        live_positions = await state.broker.get_positions()
+        state.portfolio.open_trades = len(live_positions)
+        log.info("Synced open_trades from broker: %d open positions", state.portfolio.open_trades)
+    except Exception:
+        log.warning("Could not sync open_trades from broker at startup — defaulting to 0")
+        state.portfolio.open_trades = 0
 
     # There's no persistent process to run this loop in on serverless
     # platforms (e.g. Vercel sets VERCEL=1) — a Vercel Cron hitting
