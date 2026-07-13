@@ -81,12 +81,9 @@ class StrategySelector:
         elif hurst > 0.55 and regime in ("bull", "bear"):
             selected_type = StrategyType.TREND_FOLLOW
             reason = f"Trending market: Hurst exponent {hurst:.2f} > 0.55 inside {regime} regime"
-        elif hurst < 0.45 and regime == "sideways":
-            selected_type = StrategyType.MEAN_REVERSION
-            reason = f"Mean-reverting market: Hurst exponent {hurst:.2f} < 0.45 inside sideways regime"
         elif regime == "sideways":
-            selected_type = StrategyType.MEAN_REVERSION
-            reason = f"Sideways regime detected - Mean Reversion strategy selected"
+            selected_type = StrategyType.SWING
+            reason = f"Sideways regime — Swing strategy (Hurst {hurst:.2f}, Vol {vol_percentile:.2f})"
         else:
             selected_type = StrategyType.SWING
             reason = f"Default Swing strategy selected (Regime: {regime}, Hurst: {hurst:.2f}, Vol: {vol_percentile:.2f})"
