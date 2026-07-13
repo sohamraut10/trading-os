@@ -311,12 +311,19 @@ class Orchestrator:
 
             # ── 7. Strategy filter ────────────────────────────────────────────
             strat_ok, strat_reason = strategy.accepts(signal, ctx)
+            if signal.final_decision and not strat_ok:
+                log.info("STRATEGY BLOCK — %s %s | strategy=%s | reason=%s",
+                         self.asset, signal.action, strategy.strategy_type.value, strat_reason)
 
             # ── 8. Risk check ─────────────────────────────────────────────────
             # Always computed (even for HOLD/rejected signals) so callers can see
             # what would have happened; execution itself stays gated below.
             executed = False
             risk_result = self._risk.check(signal, self._portfolio, price)
+            if signal.final_decision and strat_ok and not risk_result.is_tradeable():
+                log.info("RISK BLOCK — %s %s | status=%s | reasons=%s",
+                         self.asset, signal.action, risk_result.status.value,
+                         risk_result.rejection_reasons)
 
             if signal.final_decision and strat_ok:
                 # Emit SanitizationApplied

@@ -191,9 +191,9 @@ def select_strategy(regime: str, timeframe: str, user_override: str | None = Non
         return STRATEGY_REGISTRY[StrategyType.TREND_FOLLOW]
     if regime in ("bull", "bear"):
         return STRATEGY_REGISTRY[StrategyType.SWING]
-    if regime == "sideways":
-        return STRATEGY_REGISTRY[StrategyType.MEAN_REVERSION]
-    return STRATEGY_REGISTRY[StrategyType.SWING]  # default
+    # sideways on 1h+ → SwingStrategy (accepts sideways, no agent-composition requirements)
+    # MeanReversionStrategy was blocking valid signals by requiring Quant agent presence
+    return STRATEGY_REGISTRY[StrategyType.SWING]
 
 
 def _tf_to_minutes(tf: str) -> int:
