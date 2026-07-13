@@ -515,6 +515,8 @@ async def optimize(req: OptimizeRequest) -> dict:
 async def portfolio() -> dict:
     account = await state.broker.get_account()
     positions = await state.broker.get_positions()
+    from core.execution.broker_interface import DhanBroker
+    currency = "INR" if isinstance(state.broker, DhanBroker) else "USD"
     return {
         "equity": account["equity"],
         "cash": account["cash"],
@@ -522,6 +524,7 @@ async def portfolio() -> dict:
         "daily_pnl_pct": state.portfolio.daily_pnl_pct,
         "open_trades": len(positions),
         "mode": "MOCK" if state.mock_mode else "LIVE",
+        "currency": currency,
     }
 
 
