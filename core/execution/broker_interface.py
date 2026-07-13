@@ -30,61 +30,7 @@ try:
 except ImportError:
     _DHANHQ_AVAILABLE = False
 
-# NSE symbol → Dhan security_id (from Dhan instrument master).
-# For a full list download: https://www.dhan.co/docs/static-data/
-# Index symbols resolve via IDX_I exchange; equities via NSE_EQ / BSE_EQ.
-_NSE_SECURITY_ID_MAP: dict[str, str] = {
-    # NSE Equities
-    "RELIANCE":    "1333",
-    "TCS":         "11536",
-    "INFY":        "1594",
-    "HDFCBANK":    "1348",
-    "ICICIBANK":   "4963",
-    "HINDUNILVR":  "1394",
-    "SBIN":        "3045",
-    "BAJFINANCE":  "317",
-    "WIPRO":       "3787",
-    "TATAMOTORS":  "3456",
-    "AXISBANK":    "5900",
-    "KOTAKBANK":   "1922",
-    "MARUTI":      "10999",
-    "NTPC":        "11630",
-    "ONGC":        "11543",
-    "BHARTIARTL":  "10604",
-    "ASIANPAINT":  "236",
-    "LT":          "11483",
-    "TITAN":       "3506",
-    "SUNPHARMA":   "3351",
-    "HCLTECH":     "1363",
-    "TATASTEEL":   "3499",
-    "BAJAJFINSV":  "16669",
-    "NESTLEIND":   "17963",
-    "POWERGRID":   "14977",
-    "DIVISLAB":    "15414",
-    "DRREDDY":     "881",
-    "EICHERMOT":   "910",
-    "GRASIM":      "1232",
-    "JSWSTEEL":    "11723",
-    "ADANIENT":    "1253",
-    "ADANIPORTS":  "15083",
-    "ULTRACEMCO":  "2344",
-    # Indices (IDX_I exchange, instrument_type=INDEX)
-    "NIFTY":       "13",
-    "NIFTY50":     "13",
-    "BANKNIFTY":   "25",
-    "FINNIFTY":    "27",
-    "NIFTYNXT50":  "26",
-    "MIDCPNIFTY":  "442",
-    # MCX Commodities — Near-month contract IDs (update monthly on expiry)
-    "NATURALGAS":  "10",    # MCX Natural Gas near-month (Dhan security ID for NATGAS)
-    "CRUDEOIL":    "11",    # MCX Crude Oil near-month
-    "GOLD":        "626",   # MCX Gold near-month
-    "SILVER":      "635",   # MCX Silver near-month
-}
-
-
-_INDEX_SYMBOLS = frozenset({"NIFTY", "NIFTY50", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY"})
-_MCX_SYMBOLS = frozenset({"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"})
+from core.data.instruments import scrip_master
 
 
 class OrderType(str, Enum):
@@ -384,40 +330,49 @@ class DhanBroker(BrokerAdapter):
         self._product_type = product_type
         self._symbol_cache: dict[str, str] = {}  # ticker → security_id
 
-    def _resolve_security_id(self, symbol: str) -> str:
-        """Return numeric security_id via static map; use symbol directly if numeric."""
+    def _resolve_instrument(self, symbol: str) -> tuple[str, str, str]:
+        """
+        Return (security_id, exchange, instrument_type) for a symbol.
+        Uses the live scrip master; falls back to passing the symbol as-is.
+        """
         if symbol.lstrip("-").isdigit():
-            return symbol
-        upper = symbol.upper()
-        if upper in self._symbol_cache:
-            return self._symbol_cache[upper]
-        sid = _NSE_SECURITY_ID_MAP.get(upper)
-        if sid:
-            self._symbol_cache[upper] = sid
-            return sid
-        # Last resort: return symbol unchanged (works when user passes raw ID)
-        return symbol
+            return symbol, self._default_exchange, "EQUITY"
+        inst = scrip_master.resolve(symbol)
+        if inst:
+            return inst.security_id, inst.exchange, inst.instrument_type
+        log.warning("Unknown symbol %s — passing as-is to Dhan", symbol)
+        return symbol, self._default_exchange, "EQUITY"
 
-    def _exchange_for_symbol(self, symbol: str) -> str:
-        upper = symbol.upper()
-        if upper in _INDEX_SYMBOLS:
-            return "IDX_I"
-        if upper in _MCX_SYMBOLS:
-            return "MCX_COMM"
-        return self._default_exchange
+    def _product_type_for(self, instrument_type: str) -> str:
+        """MCX futures use INTRADAY product type; equities use configured default."""
+        if instrument_type == "FUTCOM":
+            return "INTRADAY"
+        return self._product_type
 
     async def submit_order(self, order: Order) -> Order:
         loop = asyncio.get_event_loop()
-        security_id = order.metadata.get("security_id") or self._resolve_security_id(order.asset)
-        exchange = order.metadata.get("exchange") or self._exchange_for_symbol(order.asset)
+        if order.metadata.get("security_id") and order.metadata.get("exchange"):
+            security_id = order.metadata["security_id"]
+            exchange = order.metadata["exchange"]
+            itype = order.metadata.get("instrument_type", "EQUITY")
+        else:
+            security_id, exchange, itype = self._resolve_instrument(order.asset)
+
+        product_type = self._product_type_for(itype)
         dhan_order_type = self._ORDER_TYPE_MAP.get(order.order_type, "MARKET")
         price = order.limit_price or 0
         trigger_price = order.stop_price or 0
         transaction_type = "BUY" if order.side.lower() == "buy" else "SELL"
-        qty = max(1, int(order.quantity))
 
-        log.info("DHAN ORDER — %s %s %s qty=%d price=%.2f trigger=%.2f sid=%s",
-                 transaction_type, dhan_order_type, order.asset, qty, price, trigger_price, security_id)
+        # MCX: quantity must be in lots; quantity from risk engine is in ₹ worth ÷ price
+        # Ensure at least 1 lot
+        inst = scrip_master.resolve(order.asset)
+        lot_size = inst.lot_size if inst else 1
+        qty = max(1, round(int(order.quantity) / lot_size)) * lot_size if lot_size > 1 else max(1, int(order.quantity))
+
+        log.info("DHAN ORDER — %s %s %s qty=%d price=%.2f trigger=%.2f sid=%s exch=%s prod=%s",
+                 transaction_type, dhan_order_type, order.asset, qty, price, trigger_price,
+                 security_id, exchange, product_type)
         try:
             result = await loop.run_in_executor(
                 None,
@@ -427,7 +382,7 @@ class DhanBroker(BrokerAdapter):
                     transaction_type=transaction_type,
                     quantity=qty,
                     order_type=dhan_order_type,
-                    product_type=self._product_type,
+                    product_type=product_type,
                     price=price,
                     trigger_price=trigger_price,
                 ),

@@ -23,10 +23,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from config.settings import settings
-from core.data.market_data import BinanceProvider, AlpacaProvider, DhanProvider, MockProvider, _INDEX_SYMBOLS
+from core.data.market_data import BinanceProvider, AlpacaProvider, DhanProvider, MockProvider
 from core.data.news_feed import NewsFeed
 from core.risk.risk_engine import RiskEngine, PortfolioState
-from core.execution.broker_interface import PaperBroker, SmartOrderRouter, AlpacaBroker, DhanBroker, _NSE_SECURITY_ID_MAP
+from core.execution.broker_interface import PaperBroker, SmartOrderRouter, AlpacaBroker, DhanBroker
 from core.backtest.backtester import Backtester
 from core.backtest.optimizer import BacktestOptimizer, ParamGrid
 from core.monitoring.alerts import AlertRouter
@@ -36,6 +36,7 @@ from core.learning.adaptive_weights import AdaptiveWeightManager
 from core.streaming.event_bus import EventBus
 from core.persistence.repository import Repository
 from core.orchestrator import Orchestrator
+from core.data.instruments import scrip_master
 
 log = logging.getLogger("trading_os.api")
 
@@ -295,6 +296,10 @@ async def live_suggestions_loop():
 async def lifespan(app: FastAPI):
     await state.news_feed.setup()
     await state.db.connect()
+    try:
+        await scrip_master.ensure_loaded()
+    except Exception:
+        log.warning("Scrip master unavailable at startup — instrument lookup will use fallback")
 
     # Resume from the last known portfolio state instead of resetting to the
     # hardcoded starting equity — critical on serverless, where every cold
@@ -622,126 +627,76 @@ async def close_position(req: ClosePositionRequest, _: None = Depends(require_ap
     }
 
 
-# Top-10 default pairs shown in the market selector
-_DHAN_PAIRS = [
-    {"symbol": "NIFTY",      "name": "Nifty 50 Options",           "exchange": "NSE_FNO", "type": "options",  "security_id": "13"},
-    {"symbol": "BANKNIFTY",  "name": "Bank Nifty Options",         "exchange": "NSE_FNO", "type": "options",  "security_id": "25"},
-    {"symbol": "FINNIFTY",   "name": "Fin Nifty Options",          "exchange": "NSE_FNO", "type": "options",  "security_id": "27"},
-    {"symbol": "RELIANCE",   "name": "Reliance Industries",        "exchange": "NSE_EQ",  "type": "equity",   "security_id": "1333"},
-    {"symbol": "TCS",        "name": "Tata Consultancy Services",  "exchange": "NSE_EQ",  "type": "equity",   "security_id": "11536"},
-    {"symbol": "INFY",       "name": "Infosys",                    "exchange": "NSE_EQ",  "type": "equity",   "security_id": "1594"},
-    {"symbol": "HDFCBANK",   "name": "HDFC Bank",                  "exchange": "NSE_EQ",  "type": "equity",   "security_id": "1348"},
-    {"symbol": "ICICIBANK",  "name": "ICICI Bank",                 "exchange": "NSE_EQ",  "type": "equity",   "security_id": "4963"},
-    {"symbol": "SBIN",       "name": "State Bank of India",        "exchange": "NSE_EQ",  "type": "equity",   "security_id": "3045"},
-    {"symbol": "BAJFINANCE", "name": "Bajaj Finance",              "exchange": "NSE_EQ",  "type": "equity",   "security_id": "317"},
-]
-
-# Full searchable NSE instrument list (used by /pairs/search)
-_DHAN_ALL_INSTRUMENTS = _DHAN_PAIRS + [
-    {"symbol": "WIPRO",      "name": "Wipro",                      "exchange": "NSE_EQ",  "type": "equity",   "security_id": "3787"},
-    {"symbol": "TATAMOTORS", "name": "Tata Motors",                "exchange": "NSE_EQ",  "type": "equity",   "security_id": "3456"},
-    {"symbol": "AXISBANK",   "name": "Axis Bank",                  "exchange": "NSE_EQ",  "type": "equity",   "security_id": "5900"},
-    {"symbol": "KOTAKBANK",  "name": "Kotak Mahindra Bank",        "exchange": "NSE_EQ",  "type": "equity",   "security_id": "1922"},
-    {"symbol": "MARUTI",     "name": "Maruti Suzuki",              "exchange": "NSE_EQ",  "type": "equity",   "security_id": "10999"},
-    {"symbol": "BHARTIARTL", "name": "Bharti Airtel",              "exchange": "NSE_EQ",  "type": "equity",   "security_id": "10604"},
-    {"symbol": "ASIANPAINT", "name": "Asian Paints",               "exchange": "NSE_EQ",  "type": "equity",   "security_id": "236"},
-    {"symbol": "LT",         "name": "Larsen & Toubro",            "exchange": "NSE_EQ",  "type": "equity",   "security_id": "11483"},
-    {"symbol": "TITAN",      "name": "Titan Company",              "exchange": "NSE_EQ",  "type": "equity",   "security_id": "3506"},
-    {"symbol": "SUNPHARMA",  "name": "Sun Pharmaceutical",         "exchange": "NSE_EQ",  "type": "equity",   "security_id": "3351"},
-    {"symbol": "HCLTECH",    "name": "HCL Technologies",           "exchange": "NSE_EQ",  "type": "equity",   "security_id": "1363"},
-    {"symbol": "TATASTEEL",  "name": "Tata Steel",                 "exchange": "NSE_EQ",  "type": "equity",   "security_id": "3499"},
-    {"symbol": "NTPC",       "name": "NTPC",                       "exchange": "NSE_EQ",  "type": "equity",   "security_id": "11630"},
-    {"symbol": "ONGC",       "name": "ONGC",                       "exchange": "NSE_EQ",  "type": "equity",   "security_id": "11543"},
-    {"symbol": "POWERGRID",  "name": "Power Grid Corp",            "exchange": "NSE_EQ",  "type": "equity",   "security_id": "14977"},
-    {"symbol": "DRREDDY",    "name": "Dr. Reddy's Laboratories",   "exchange": "NSE_EQ",  "type": "equity",   "security_id": "881"},
-    {"symbol": "BAJAJFINSV", "name": "Bajaj Finserv",              "exchange": "NSE_EQ",  "type": "equity",   "security_id": "16669"},
-    {"symbol": "DIVISLAB",   "name": "Divi's Laboratories",        "exchange": "NSE_EQ",  "type": "equity",   "security_id": "15414"},
-    {"symbol": "HINDUNILVR", "name": "Hindustan Unilever",         "exchange": "NSE_EQ",  "type": "equity",   "security_id": "1394"},
-    {"symbol": "ADANIENT",   "name": "Adani Enterprises",          "exchange": "NSE_EQ",  "type": "equity",   "security_id": "1253"},
-    {"symbol": "ADANIPORTS", "name": "Adani Ports & SEZ",          "exchange": "NSE_EQ",  "type": "equity",   "security_id": "15083"},
-    # Index data (for charting; trade via NSE_FNO contracts)
-    {"symbol": "NIFTY50",    "name": "Nifty 50 Index",             "exchange": "IDX_I",   "type": "index",    "security_id": "13"},
-    {"symbol": "BANKNIFTY",  "name": "Bank Nifty Index",           "exchange": "IDX_I",   "type": "index",    "security_id": "25"},
-]
-
 _ALPACA_PAIRS = [
-    {"symbol": "AAPL",   "name": "Apple Inc.",       "exchange": "NASDAQ", "type": "equity"},
-    {"symbol": "MSFT",   "name": "Microsoft Corp.",  "exchange": "NASDAQ", "type": "equity"},
-    {"symbol": "NVDA",   "name": "NVIDIA Corp.",     "exchange": "NASDAQ", "type": "equity"},
-    {"symbol": "TSLA",   "name": "Tesla Inc.",       "exchange": "NASDAQ", "type": "equity"},
-    {"symbol": "AMZN",   "name": "Amazon.com Inc.",  "exchange": "NASDAQ", "type": "equity"},
-    {"symbol": "GOOGL",  "name": "Alphabet Inc.",    "exchange": "NASDAQ", "type": "equity"},
-    {"symbol": "META",   "name": "Meta Platforms",   "exchange": "NASDAQ", "type": "equity"},
-    {"symbol": "BTCUSD", "name": "Bitcoin / USD",    "exchange": "CRYPTO", "type": "crypto"},
-    {"symbol": "ETHUSD", "name": "Ethereum / USD",   "exchange": "CRYPTO", "type": "crypto"},
-    {"symbol": "SPY",    "name": "S&P 500 ETF",      "exchange": "NYSE",   "type": "etf"},
+    {"symbol": "AAPL",   "name": "Apple Inc.",       "exchange": "NASDAQ", "type": "equity", "data_source": "alpaca"},
+    {"symbol": "MSFT",   "name": "Microsoft Corp.",  "exchange": "NASDAQ", "type": "equity", "data_source": "alpaca"},
+    {"symbol": "NVDA",   "name": "NVIDIA Corp.",     "exchange": "NASDAQ", "type": "equity", "data_source": "alpaca"},
+    {"symbol": "TSLA",   "name": "Tesla Inc.",       "exchange": "NASDAQ", "type": "equity", "data_source": "alpaca"},
+    {"symbol": "AMZN",   "name": "Amazon.com Inc.",  "exchange": "NASDAQ", "type": "equity", "data_source": "alpaca"},
+    {"symbol": "GOOGL",  "name": "Alphabet Inc.",    "exchange": "NASDAQ", "type": "equity", "data_source": "alpaca"},
+    {"symbol": "META",   "name": "Meta Platforms",   "exchange": "NASDAQ", "type": "equity", "data_source": "alpaca"},
+    {"symbol": "BTCUSD", "name": "Bitcoin / USD",    "exchange": "CRYPTO", "type": "crypto", "data_source": "alpaca"},
+    {"symbol": "ETHUSD", "name": "Ethereum / USD",   "exchange": "CRYPTO", "type": "crypto", "data_source": "alpaca"},
+    {"symbol": "SPY",    "name": "S&P 500 ETF",      "exchange": "NYSE",   "type": "etf",    "data_source": "alpaca"},
 ]
 
 _BINANCE_PAIRS = [
-    {"symbol": "BTCUSDT",  "name": "Bitcoin / USDT",   "exchange": "BINANCE", "type": "crypto"},
-    {"symbol": "ETHUSDT",  "name": "Ethereum / USDT",  "exchange": "BINANCE", "type": "crypto"},
-    {"symbol": "SOLUSDT",  "name": "Solana / USDT",    "exchange": "BINANCE", "type": "crypto"},
-    {"symbol": "BNBUSDT",  "name": "BNB / USDT",       "exchange": "BINANCE", "type": "crypto"},
-    {"symbol": "XRPUSDT",  "name": "XRP / USDT",       "exchange": "BINANCE", "type": "crypto"},
-    {"symbol": "DOGEUSDT", "name": "Dogecoin / USDT",  "exchange": "BINANCE", "type": "crypto"},
-    {"symbol": "ADAUSDT",  "name": "Cardano / USDT",   "exchange": "BINANCE", "type": "crypto"},
-    {"symbol": "AVAXUSDT", "name": "Avalanche / USDT", "exchange": "BINANCE", "type": "crypto"},
-    {"symbol": "DOTUSDT",  "name": "Polkadot / USDT",  "exchange": "BINANCE", "type": "crypto"},
-    {"symbol": "MATICUSDT","name": "Polygon / USDT",   "exchange": "BINANCE", "type": "crypto"},
+    {"symbol": "BTCUSDT",  "name": "Bitcoin / USDT",   "exchange": "BINANCE", "type": "crypto", "data_source": ""},
+    {"symbol": "ETHUSDT",  "name": "Ethereum / USDT",  "exchange": "BINANCE", "type": "crypto", "data_source": ""},
+    {"symbol": "SOLUSDT",  "name": "Solana / USDT",    "exchange": "BINANCE", "type": "crypto", "data_source": ""},
+    {"symbol": "BNBUSDT",  "name": "BNB / USDT",       "exchange": "BINANCE", "type": "crypto", "data_source": ""},
+    {"symbol": "XRPUSDT",  "name": "XRP / USDT",       "exchange": "BINANCE", "type": "crypto", "data_source": ""},
+    {"symbol": "ADAUSDT",  "name": "Cardano / USDT",   "exchange": "BINANCE", "type": "crypto", "data_source": ""},
+    {"symbol": "DOTUSDT",  "name": "Polkadot / USDT",  "exchange": "BINANCE", "type": "crypto", "data_source": ""},
 ]
-
-
-def _active_pair_list() -> tuple[list[dict], str]:
-    if isinstance(state.broker, DhanBroker):
-        return _DHAN_PAIRS, "DhanBroker"
-    if isinstance(state.broker, AlpacaBroker):
-        return _ALPACA_PAIRS, "AlpacaBroker"
-    return _BINANCE_PAIRS, "PaperBroker"
 
 
 @router.get("/pairs/suggest")
 async def suggest_pairs() -> dict:
-    """Return default tradeable pairs for the active broker, plus any secondary providers."""
-    pairs, broker = _active_pair_list()
-    # Tag primary pairs with their data source
-    tagged = [dict(p, data_source="") for p in pairs]
-    # Append secondary providers' pairs so the user can chart/analyze them too
-    if "alpaca" in state.secondary_providers:
-        alpaca_tagged = [dict(p, data_source="alpaca") for p in _ALPACA_PAIRS]
-        tagged = tagged + alpaca_tagged
-    return {"broker": broker, "pairs": tagged}
+    """
+    Return the configured watchlist as pair dicts.
+    For Dhan: resolves every symbol in LIVE_SUGGESTIONS_ASSETS via the scrip
+    master so security_id, exchange, and lot_size are always current.
+    """
+    if isinstance(state.broker, DhanBroker):
+        assets = [a.strip() for a in settings.live_suggestions_assets.split(",") if a.strip()]
+        pairs = scrip_master.watchlist_pairs(assets)
+        if "alpaca" in state.secondary_providers:
+            pairs = pairs + _ALPACA_PAIRS
+        return {"broker": "DhanBroker", "pairs": pairs}
+
+    if isinstance(state.broker, AlpacaBroker):
+        return {"broker": "AlpacaBroker", "pairs": _ALPACA_PAIRS}
+
+    return {"broker": "PaperBroker", "pairs": _BINANCE_PAIRS}
 
 
 @router.get("/pairs/search")
 async def search_pairs(q: str = "") -> dict:
     """
-    Search for trading pairs. Delegates to Dhan's search API when Dhan is
-    the active broker; otherwise filters the static suggestion list.
+    Search for any tradeable instrument.
+    For Dhan: searches the full scrip master (50k+ instruments).
     """
     q = q.strip()
-    pairs, broker = _active_pair_list()
-
-    if not q:
-        return {"broker": broker, "pairs": pairs, "query": ""}
-
     if isinstance(state.broker, DhanBroker):
-        q_up = q.upper()
-        found = [
-            dict(p, data_source="") for p in _DHAN_ALL_INSTRUMENTS
-            if q_up in p["symbol"].upper() or q_up in p["name"].upper()
-        ]
-        # Also search Alpaca if it's a secondary provider
+        broker = "DhanBroker"
+        if not q:
+            assets = [a.strip() for a in settings.live_suggestions_assets.split(",") if a.strip()]
+            pairs = scrip_master.watchlist_pairs(assets)
+        else:
+            pairs = scrip_master.search(q, limit=15)
         if "alpaca" in state.secondary_providers:
-            alpaca_found = [
-                dict(p, data_source="alpaca") for p in _ALPACA_PAIRS
-                if q_up in p["symbol"].upper() or q_up in p["name"].upper()
-            ]
-            found = found + alpaca_found
-        return {"broker": broker, "pairs": found[:10], "query": q}
+            q_up = q.upper()
+            alpaca = [p for p in _ALPACA_PAIRS if not q or q_up in p["symbol"] or q_up in p["name"].upper()]
+            pairs = pairs + alpaca
+        return {"broker": broker, "pairs": pairs[:20], "query": q}
 
-    q_up = q.upper()
-    filtered = [p for p in pairs if q_up in p["symbol"].upper() or q_up in p["name"].upper()]
-    return {"broker": broker, "pairs": filtered, "query": q}
+    pairs = _ALPACA_PAIRS if isinstance(state.broker, AlpacaBroker) else _BINANCE_PAIRS
+    broker = "AlpacaBroker" if isinstance(state.broker, AlpacaBroker) else "PaperBroker"
+    if q:
+        q_up = q.upper()
+        pairs = [p for p in pairs if q_up in p["symbol"].upper() or q_up in p["name"].upper()]
+    return {"broker": broker, "pairs": pairs, "query": q}
 
 
 class StrategySelectRequest(BaseModel):
@@ -839,10 +794,10 @@ async def options_expiries(symbol: str = "NIFTY") -> dict:
     if not isinstance(state.broker, DhanBroker):
         return {"expiries": []}
     upper = symbol.strip().upper()
-    security_id = _NSE_SECURITY_ID_MAP.get(upper)
-    if not security_id:
+    inst = scrip_master.resolve(upper)
+    if not inst:
         return {"expiries": []}
-    exchange = "IDX_I" if upper in _INDEX_SYMBOLS else "NSE_EQ"
+    security_id, exchange = inst.security_id, inst.exchange
     try:
         loop = asyncio.get_event_loop()
         raw = await loop.run_in_executor(
@@ -861,10 +816,10 @@ async def options_chain(symbol: str = "NIFTY", expiry: str = "") -> dict:
     if not isinstance(state.broker, DhanBroker):
         return {"symbol": symbol, "expiry": expiry, "spot": 0.0, "strikes": []}
     upper = symbol.strip().upper()
-    security_id = _NSE_SECURITY_ID_MAP.get(upper)
-    if not security_id or not expiry:
+    inst = scrip_master.resolve(upper)
+    if not inst or not expiry:
         return {"symbol": symbol, "expiry": expiry, "spot": 0.0, "strikes": []}
-    exchange = "IDX_I" if upper in _INDEX_SYMBOLS else "NSE_EQ"
+    security_id, exchange = inst.security_id, inst.exchange
     try:
         loop = asyncio.get_event_loop()
         raw = await loop.run_in_executor(
