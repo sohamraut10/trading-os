@@ -234,60 +234,7 @@ class BinanceProvider(MarketDataProvider):
         return OrderBook(bids=bids, asks=asks, timestamp=time.time())
 
 
-_NSE_SECURITY_ID_MAP: dict[str, str] = {
-    # NSE Equities
-    "RELIANCE":    "1333",
-    "TCS":         "11536",
-    "INFY":        "1594",
-    "HDFCBANK":    "1348",
-    "ICICIBANK":   "4963",
-    "HINDUNILVR":  "1394",
-    "SBIN":        "3045",
-    "BAJFINANCE":  "317",
-    "WIPRO":       "3787",
-    "TATAMOTORS":  "3456",
-    "AXISBANK":    "5900",
-    "KOTAKBANK":   "1922",
-    "MARUTI":      "10999",
-    "NTPC":        "11630",
-    "ONGC":        "11543",
-    "BHARTIARTL":  "10604",
-    "ASIANPAINT":  "236",
-    "LT":          "11483",
-    "TITAN":       "3506",
-    "SUNPHARMA":   "3351",
-    "HCLTECH":     "1363",
-    "TATASTEEL":   "3499",
-    "BAJAJFINSV":  "16669",
-    "NESTLEIND":   "17963",
-    "POWERGRID":   "14977",
-    "DIVISLAB":    "15414",
-    "DRREDDY":     "881",
-    "EICHERMOT":   "910",
-    "GRASIM":      "1232",
-    "JSWSTEEL":    "11723",
-    "ADANIENT":    "1253",
-    "ADANIPORTS":  "15083",
-    "ULTRACEMCO":  "2344",
-    # Indices (IDX_I exchange, instrument_type=INDEX)
-    "NIFTY":       "13",
-    "NIFTY50":     "13",
-    "BANKNIFTY":   "25",
-    "FINNIFTY":    "27",
-    "NIFTYNXT50":  "26",
-    "MIDCPNIFTY":  "442",
-    # MCX Commodities — Near-month contract IDs (update monthly on expiry)
-    "NATURALGAS":  "10",    # MCX Natural Gas near-month (Dhan security ID for NATGAS)
-    "CRUDEOIL":    "11",    # MCX Crude Oil near-month
-    "GOLD":        "626",   # MCX Gold near-month
-    "SILVER":      "635",   # MCX Silver near-month
-}
-
-# Symbols that map to the IDX_I exchange (Dhan index segment)
-_INDEX_SYMBOLS = frozenset({"NIFTY", "NIFTY50", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY"})
-
-# Symbols that map to the MCX_COMM exchange (commodity futures)
-_MCX_SYMBOLS = frozenset({"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"})
+from core.data.instruments import scrip_master
 
 # Dhan daily-bar timestamps are midnight IST (UTC+5:30).
 # lightweight-charts runs in UTC mode, so a bar stamped "July 10 00:00 IST"
@@ -342,28 +289,22 @@ class DhanProvider(MarketDataProvider):
             raise RuntimeError("dhanhq is not installed — run `pip install dhanhq`")
         self._default_exchange = default_exchange
         self._instrument_type = instrument_type
-        self._symbol_cache: dict[str, str] = {}
+        self._symbol_cache: dict[str, tuple[str, str, str]] = {}
 
-    def _resolve_security_id(self, symbol: str) -> str:
+    def _resolve_instrument(self, symbol: str) -> tuple[str, str, str]:
+        """Return (security_id, exchange_segment, instrument_type) from scrip master."""
         if symbol.lstrip("-").isdigit():
-            return symbol
+            return symbol, self._default_exchange, self._instrument_type
         upper = symbol.upper()
         if upper in self._symbol_cache:
-            return self._symbol_cache[upper]
-        sid = _NSE_SECURITY_ID_MAP.get(upper)
-        if sid:
-            self._symbol_cache[upper] = sid
-            return sid
-        return symbol
-
-    def _exchange_and_itype(self, symbol: str) -> tuple[str, str]:
-        """Return (exchange_segment, instrument_type) for a symbol."""
-        upper = symbol.upper()
-        if upper in _INDEX_SYMBOLS:
-            return "IDX_I", "INDEX"
-        if upper in _MCX_SYMBOLS:
-            return "MCX_COMM", "FUTCOM"
-        return self._default_exchange, self._instrument_type
+            cached = self._symbol_cache[upper]
+            return cached
+        inst = scrip_master.resolve(upper)
+        if inst:
+            result = (inst.security_id, inst.exchange, inst.instrument_type)
+            self._symbol_cache[upper] = result
+            return result
+        return symbol, self._default_exchange, self._instrument_type
 
     async def get_candles(self, symbol: str, timeframe: str, limit: int = 300) -> list[OHLCV]:
         import asyncio
@@ -381,8 +322,7 @@ class DhanProvider(MarketDataProvider):
         if gap > 0:
             await asyncio.sleep(gap)
 
-        security_id = self._resolve_security_id(symbol)
-        exchange, itype = self._exchange_and_itype(symbol)
+        security_id, exchange, itype = self._resolve_instrument(symbol)
         tf_type, tf_interval = self._TF_MAP.get(timeframe, ("intraday", 60))
 
         now = datetime.now()
@@ -460,8 +400,7 @@ class DhanProvider(MarketDataProvider):
 
     async def get_current_price(self, symbol: str) -> float:
         import asyncio
-        security_id = self._resolve_security_id(symbol)
-        exchange, _ = self._exchange_and_itype(symbol)
+        security_id, exchange, _ = self._resolve_instrument(symbol)
         loop = asyncio.get_event_loop()
 
         # 1. Real-time quote (requires Dhan market-data subscription; often returns
