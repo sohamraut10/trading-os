@@ -19,6 +19,7 @@ export default defineConfig({
       '/validate': 'http://localhost:8000',
       '/events': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
+      '/system': 'http://localhost:8000',
       '/ws': {
         target: 'ws://localhost:8000',
         ws: true,

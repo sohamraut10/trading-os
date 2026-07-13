@@ -449,8 +449,9 @@ class DhanProvider(MarketDataProvider):
             pass
 
         # 3. Daily close (official NSE VWAP-based closing price — last resort)
+        # Use limit=5 because Dhan returns DH-905 for limit=1 on daily bars
         try:
-            daily = await self.get_candles(symbol, "1d", 1)
+            daily = await self.get_candles(symbol, "1d", 5)
             if daily:
                 return daily[-1].close
         except Exception:

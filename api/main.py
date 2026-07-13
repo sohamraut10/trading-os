@@ -282,7 +282,7 @@ async def live_suggestions_loop():
     assets = [a.strip() for a in settings.live_suggestions_assets.split(",") if a.strip()]
     while True:
         for asset in assets:
-            await run_consensus_cycle(asset, timeframe="1h", candle_limit=300, execute_if_signal=False)
+            await run_consensus_cycle(asset, timeframe="1h", candle_limit=300, execute_if_signal=settings.auto_execute_signals)
             await asyncio.sleep(settings.live_suggestions_interval_sec)
 
 
@@ -425,6 +425,31 @@ async def health():
         "version": "1.0.0",
         "portfolio_equity": (await state.broker.get_account())["equity"],
     }
+
+
+@router.get("/system")
+async def system_metrics():
+    """MacBook hardware metrics for the infrastructure panel."""
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        cpu = psutil.cpu_percent(interval=None)
+        disk = psutil.disk_usage("/")
+        # On macOS, mem.used reflects "wired" memory only.
+        # total - available gives true active+wired+compressed usage.
+        ram_used = mem.total - mem.available
+        return {
+            "ram_used_gb": round(ram_used / 1e9, 1),
+            "ram_total_gb": round(mem.total / 1e9, 1),
+            "ram_pct": mem.percent,
+            "cpu_pct": cpu,
+            "disk_used_gb": round(disk.used / 1e9, 1),
+            "disk_total_gb": round(disk.total / 1e9, 1),
+            "disk_pct": disk.percent,
+        }
+    except ImportError:
+        return {"ram_used_gb": 0, "ram_total_gb": 8, "ram_pct": 0, "cpu_pct": 0,
+                "disk_used_gb": 0, "disk_total_gb": 256, "disk_pct": 0}
 
 
 @router.get("/metrics", response_class=Response)

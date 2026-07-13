@@ -138,13 +138,17 @@ def compute_order_flow_metrics(ctx: MarketContext) -> OrderFlowMetrics:
     candles = ctx.candles
     ob = ctx.order_book
 
+    # Use last candle close when live price is unavailable (market closed / data outage)
+    if not price and candles:
+        price = candles[-1].close
+
     supports, resistances = _identify_sr_levels(candles)
 
     nearest_support = max((s for s in supports if s < price), default=price * 0.95)
     nearest_resistance = min((r for r in resistances if r > price), default=price * 1.05)
 
-    support_dist = (price - nearest_support) / price * 100
-    resistance_dist = (nearest_resistance - price) / price * 100
+    support_dist = (price - nearest_support) / price * 100 if price else 0.0
+    resistance_dist = (nearest_resistance - price) / price * 100 if price else 0.0
 
     poc = _volume_profile(candles)
     delta, delta_trend = _candle_delta(candles)
@@ -203,7 +207,7 @@ def _of_signal(m: OrderFlowMetrics, price: float) -> tuple[Signal, float, list[s
         reasons.append(f"Price near key resistance (dist={m.resistance_distance_pct:.2f}%)")
 
     # Volume Profile POC
-    if abs(price - m.volume_profile_poc) / price < 0.005:
+    if price and abs(price - m.volume_profile_poc) / price < 0.005:
         reasons.append(f"Price at high-volume POC {m.volume_profile_poc:.4f} — expect rejection or breakout")
 
     # Smart money / large orders

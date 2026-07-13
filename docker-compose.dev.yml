@@ -1,0 +1,163 @@
+# Development compose — hot reload, ports directly exposed, no Caddy/cloudflared.
+# Run with:  docker compose -f docker-compose.dev.yml up
+# Prerequisites: copy .env.prod.example → .env and fill in API keys.
+
+
+x-restart: &restart
+  restart: unless-stopped
+
+networks:
+  dev:
+    driver: bridge
+
+volumes:
+  postgres_data_dev:
+  redis_data_dev:
+  grafana_data_dev:
+  prometheus_data_dev:
+
+services:
+
+  # ── API — uvicorn with --reload ──────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: infrastructure/Dockerfile
+      target: development
+    platform: linux/arm64
+    <<: *restart
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount entire project for hot reload (excludes node_modules via .dockerignore)
+      - .:/app
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+      ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
+      BINANCE_API_KEY: ${BINANCE_API_KEY:-}
+      BINANCE_SECRET: ${BINANCE_SECRET:-}
+      NEWS_API_KEY: ${NEWS_API_KEY:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DHAN_CLIENT_ID: ${DHAN_CLIENT_ID:-}
+      DHAN_ACCESS_TOKEN: ${DHAN_ACCESS_TOKEN:-}
+      DATABASE_URL: postgresql+asyncpg://trading:devpassword@postgres:5432/trading_os
+      REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
+      CORS_ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:3000"
+      ENABLE_LIVE_SUGGESTIONS: ${ENABLE_LIVE_SUGGESTIONS:-false}
+      LIVE_SUGGESTIONS_ASSETS: ${LIVE_SUGGESTIONS_ASSETS:-BTCUSDT}
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      MOCK_MODE: ${MOCK_MODE:-true}
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - dev
+
+  # ── Frontend — Vite dev server with HMR ─────────────────────────────────────
+  frontend:
+    image: node:20-alpine
+    platform: linux/arm64
+    <<: *restart
+    working_dir: /app
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./dashboard:/app
+      - /app/node_modules          # anonymous volume to prevent host override
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_WS_URL: ws://localhost:8000
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0"
+    networks:
+      - dev
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    platform: linux/arm64
+    <<: *restart
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: trading_os
+      POSTGRES_USER: trading
+      POSTGRES_PASSWORD: devpassword
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+      - ./infrastructure/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trading -d trading_os"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - dev
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    platform: linux/arm64
+    <<: *restart
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --appendonly yes
+    volumes:
+      - redis_data_dev:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - dev
+
+  # ── Prometheus ───────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    platform: linux/arm64
+    <<: *restart
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infrastructure/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data_dev:/prometheus
+    networks:
+      - dev
+
+  # ── Grafana ──────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    platform: linux/arm64
+    <<: *restart
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_LOG_LEVEL: warn
+    volumes:
+      - grafana_data_dev:/var/lib/grafana
+      - ./infrastructure/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./infrastructure/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - dev

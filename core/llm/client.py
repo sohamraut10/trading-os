@@ -68,6 +68,9 @@ class GeminiLLM:
             config_kwargs["system_instruction"] = system_prompt
         if temperature is not None:
             config_kwargs["temperature"] = temperature
+        # Disable thinking for gemini-2.5 models — thinking tokens consume the
+        # max_output_tokens budget, truncating the actual JSON response.
+        config_kwargs["thinking_config"] = genai_types.ThinkingConfig(thinking_budget=0)
 
         response = await self._client.aio.models.generate_content(
             model=self._model,

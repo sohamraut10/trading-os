@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd service for Trading OS.
+
+  Install:
+    sudo mkdir -p /var/log/trading-os
+    sudo chown $(whoami) /var/log/trading-os
+    sudo cp infrastructure/launchd/com.trading-os.plist /Library/LaunchDaemons/
+    sudo launchctl bootstrap system /Library/LaunchDaemons/com.trading-os.plist
+
+  Unload:
+    sudo launchctl bootout system /Library/LaunchDaemons/com.trading-os.plist
+
+  View logs:
+    tail -f /var/log/trading-os/stdout.log
+    tail -f /var/log/trading-os/stderr.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.trading-os</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/docker</string>
+        <string>compose</string>
+        <string>-f</string>
+        <string>/Users/sohamraut/trading-os-1/docker-compose.prod.yml</string>
+        <string>--env-file</string>
+        <string>/Users/sohamraut/trading-os-1/.env.prod</string>
+        <string>up</string>
+        <string>-d</string>
+        <string>--remove-orphans</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/sohamraut/trading-os-1</string>
+
+    <!-- Start automatically at boot and keep running -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <!-- Restart if the process exits for any reason except a clean stop -->
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Wait 15 s before respawning to avoid hammering Docker if it crashes -->
+    <key>ThrottleInterval</key>
+    <integer>15</integer>
+
+    <!-- Give Docker time to come up before launchd declares it failed -->
+    <key>TimeOut</key>
+    <integer>120</integer>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/trading-os/stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/trading-os/stderr.log</string>
+
+    <!-- Ensure Docker Desktop has started before we try to run compose -->
+    <key>WatchPaths</key>
+    <array>
+        <string>/var/run/docker.sock</string>
+    </array>
+
+    <!-- Environment variables for the docker CLI -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/sohamraut</string>
+    </dict>
+</dict>
+</plist>
