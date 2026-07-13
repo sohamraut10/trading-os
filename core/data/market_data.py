@@ -276,10 +276,18 @@ _NSE_SECURITY_ID_MAP: dict[str, str] = {
     "FINNIFTY":    "27",
     "NIFTYNXT50":  "26",
     "MIDCPNIFTY":  "442",
+    # MCX Commodities — Near-month contract IDs (update monthly on expiry)
+    "NATURALGAS":  "10",    # MCX Natural Gas near-month (Dhan security ID for NATGAS)
+    "CRUDEOIL":    "11",    # MCX Crude Oil near-month
+    "GOLD":        "626",   # MCX Gold near-month
+    "SILVER":      "635",   # MCX Silver near-month
 }
 
 # Symbols that map to the IDX_I exchange (Dhan index segment)
 _INDEX_SYMBOLS = frozenset({"NIFTY", "NIFTY50", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY"})
+
+# Symbols that map to the MCX_COMM exchange (commodity futures)
+_MCX_SYMBOLS = frozenset({"NATURALGAS", "CRUDEOIL", "GOLD", "SILVER"})
 
 # Dhan daily-bar timestamps are midnight IST (UTC+5:30).
 # lightweight-charts runs in UTC mode, so a bar stamped "July 10 00:00 IST"
@@ -353,6 +361,8 @@ class DhanProvider(MarketDataProvider):
         upper = symbol.upper()
         if upper in _INDEX_SYMBOLS:
             return "IDX_I", "INDEX"
+        if upper in _MCX_SYMBOLS:
+            return "MCX_COMM", "FUTCOM"
         return self._default_exchange, self._instrument_type
 
     async def get_candles(self, symbol: str, timeframe: str, limit: int = 300) -> list[OHLCV]:

@@ -10,7 +10,7 @@ import { connectEvents } from './eventsPoller';
 
 // ── constants ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_WATCHLIST = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN"];
+const DEFAULT_WATCHLIST = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "NATURALGAS"];
 
 const AGENT_META = {
   Technical: { label: "Technical Analyst",  icon: BarChart2,   color: "blue",   indicators: ["RSI", "MACD", "EMA", "VWAP"] },
@@ -486,6 +486,14 @@ export default function App() {
     return r && r.action && r.action !== "HOLD" && r.confidence >= 60;
   });
 
+  const tradeableOpps = sortedWL
+    .filter(s => {
+      const r = scanResults[s];
+      return r && r.action && r.action !== "HOLD" && r.confidence >= 60 &&
+             (r.risk?.status === "APPROVED" || r.risk?.status === "SCALED_DOWN");
+    })
+    .map(s => ({ sym: s, result: scanResults[s] }));
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-50 font-mono flex flex-col">
 
@@ -557,6 +565,91 @@ export default function App() {
           ))}
         </div>
       </div>
+
+      {/* ── Capital-Filtered Tradeable Opportunities ── */}
+      {tradeableOpps.length > 0 && (
+        <div className="px-5 pb-4">
+          <div className="bg-neutral-900 border border-emerald-500/20 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-neutral-800 flex items-center gap-2 flex-wrap">
+              <CheckCircle className="h-3.5 w-3.5 text-emerald-400 flex-shrink-0" />
+              <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Tradeable Now</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-bold">
+                {tradeableOpps.length} within capital
+              </span>
+              <span className="ml-auto text-[10px] text-neutral-600">
+                Available cash: <span className="text-neutral-400">{fmtMoney(portfolio.cash, portfolio.currency)}</span>
+              </span>
+            </div>
+            <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              {tradeableOpps.map(({ sym, result }) => {
+                const r = result.risk;
+                const allPct = r?.approved_size_pct ? (r.approved_size_pct * 100).toFixed(1) : null;
+                const reqCapital = allPct ? portfolio.equity * r.approved_size_pct : null;
+                const isBuy = result.action === "BUY";
+                return (
+                  <div key={sym} className={`rounded-xl border p-3 flex flex-col gap-2 ${
+                    isBuy ? "border-emerald-500/30 bg-emerald-500/5" : "border-rose-500/30 bg-rose-500/5"
+                  }`}>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-black text-white">{sym}</span>
+                      <span className={`text-[11px] font-bold px-2 py-0.5 rounded border ${signalBadge(result.action)}`}>
+                        {result.action}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-1 bg-neutral-800 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${isBuy ? "bg-emerald-500" : "bg-rose-500"}`}
+                          style={{ width: `${result.confidence}%` }} />
+                      </div>
+                      <span className="text-[10px] text-neutral-400 font-bold tabular-nums">{result.confidence.toFixed(0)}%</span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-1.5 text-[10px]">
+                      <div>
+                        <div className="text-neutral-600 uppercase mb-0.5">Price</div>
+                        <div className="text-neutral-200 font-bold">
+                          {result.price ? `₹${result.price.toFixed(0)}` : "—"}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-neutral-600 uppercase mb-0.5">Stop</div>
+                        <div className="text-rose-400 font-bold">
+                          {r?.stop_loss_price ? `₹${r.stop_loss_price.toFixed(0)}` : "—"}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-neutral-600 uppercase mb-0.5">Target</div>
+                        <div className="text-emerald-400 font-bold">
+                          {r?.take_profit_price ? `₹${r.take_profit_price.toFixed(0)}` : "—"}
+                        </div>
+                      </div>
+                    </div>
+
+                    {reqCapital !== null && (
+                      <div className="text-[10px] text-neutral-500 border-t border-neutral-800/60 pt-1.5">
+                        Capital: <span className="text-white font-bold">{fmtMoney(reqCapital, portfolio.currency)}</span>
+                        {allPct && <span className="text-neutral-600 ml-1">({allPct}% Kelly)</span>}
+                      </div>
+                    )}
+
+                    <button
+                      onClick={() => setSelected({ symbol: sym, data_source: "" })}
+                      className={`mt-0.5 w-full py-1.5 rounded-lg text-[11px] font-bold transition-all ${
+                        isBuy
+                          ? "bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30"
+                          : "bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 border border-rose-500/30"
+                      }`}
+                    >
+                      {isBuy ? "▲" : "▼"} Analyze {sym}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Candlestick Chart (full width) ── */}
       <div className="px-5 pt-5 pb-4">
