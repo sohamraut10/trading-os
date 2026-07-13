@@ -76,6 +76,9 @@ services:
     build:
       context: .
       dockerfile: infrastructure/Dockerfile.frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-https://api.${DOMAIN}}
+        VITE_WS_URL: ${VITE_WS_URL:-wss://api.${DOMAIN}}
     platform: linux/arm64
     <<: *restart
     networks:
