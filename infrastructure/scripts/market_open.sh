@@ -18,11 +18,13 @@ ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env.prod}"
 
 # ── Load .env.prod if not already in env ────────────────────────────────────
 if [ -f "$ENV_FILE" ]; then
-  # Export only lines that look like KEY=VALUE (skip comments and blanks)
+  _tmp=$(mktemp)
+  grep -E '^[A-Z_][A-Z0-9_]*=' "$ENV_FILE" > "$_tmp" 2>/dev/null || true
   set -a
   # shellcheck disable=SC1090
-  source <(grep -E '^[A-Z_][A-Z0-9_]*=' "$ENV_FILE" 2>/dev/null || true)
+  . "$_tmp"
   set +a
+  rm -f "$_tmp"
 fi
 
 API_URL="${API_URL:-http://localhost:8000}"
