@@ -23,6 +23,13 @@ const COLOR = {
   indigo: { bg: "bg-indigo-500/10", border: "border-indigo-500/20", icon: "text-indigo-400", conf: "text-indigo-400" },
 };
 
+function fmtMoney(val, currency = "INR") {
+  const sym = currency === "USD" ? "$" : "₹";
+  if (val >= 1e6) return `${sym}${(val / 1e6).toFixed(2)}M`;
+  if (val >= 1e3) return `${sym}${(val / 1e3).toFixed(1)}k`;
+  return `${sym}${val.toFixed(2)}`;
+}
+
 function signalColor(decision) {
   if (decision === "BUY")  return "text-emerald-400";
   if (decision === "SELL") return "text-rose-400";
@@ -46,14 +53,29 @@ function finalActionDisplay(signal) {
 // ── sub-components ───────────────────────────────────────────────────────────
 
 function PairDropdown({ pairs, selected, onSelect }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
+  const [open, setOpen]     = useState(false);
+  const [query, setQuery]   = useState("");
+  const inputRef            = useRef(null);
+  const ref                 = useRef(null);
 
   useEffect(() => {
     const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
+
+  useEffect(() => { if (open) setTimeout(() => inputRef.current?.focus(), 50); }, [open]);
+
+  const filtered = query.trim()
+    ? pairs.filter(p => p.symbol.toUpperCase().includes(query.toUpperCase()))
+    : pairs;
+
+  const handleCustom = (e) => {
+    if (e.key === "Enter" && query.trim()) {
+      onSelect({ symbol: query.trim().toUpperCase(), data_source: "" });
+      setQuery(""); setOpen(false);
+    }
+  };
 
   return (
     <div className="relative" ref={ref}>
@@ -65,17 +87,34 @@ function PairDropdown({ pairs, selected, onSelect }) {
         <ChevronDown className="h-3 w-3 text-neutral-400" />
       </button>
       {open && (
-        <div className="absolute right-0 mt-1 w-48 bg-neutral-900 border border-neutral-700 rounded-lg shadow-xl z-50 max-h-64 overflow-y-auto">
-          {pairs.map(p => (
-            <button
-              key={`${p.symbol}-${p.data_source || "primary"}`}
-              onClick={() => { onSelect(p); setOpen(false); }}
-              className={`w-full text-left px-3 py-2 text-xs font-mono hover:bg-neutral-800 transition-colors flex justify-between items-center ${p.symbol === selected ? "text-blue-400" : "text-neutral-300"}`}
-            >
-              <span>{p.symbol}</span>
-              {p.data_source && <span className="text-[9px] text-neutral-500 uppercase">{p.data_source}</span>}
-            </button>
-          ))}
+        <div className="absolute right-0 mt-1 w-52 bg-neutral-900 border border-neutral-700 rounded-lg shadow-xl z-50 flex flex-col">
+          <div className="p-2 border-b border-neutral-800">
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={handleCustom}
+              placeholder="Search or type symbol + Enter"
+              className="w-full bg-neutral-800 text-xs text-white placeholder-neutral-600 rounded px-2 py-1.5 outline-none border border-neutral-700 focus:border-blue-500"
+            />
+          </div>
+          <div className="max-h-56 overflow-y-auto">
+            {filtered.map(p => (
+              <button
+                key={`${p.symbol}-${p.data_source || "primary"}`}
+                onClick={() => { onSelect(p); setQuery(""); setOpen(false); }}
+                className={`w-full text-left px-3 py-2 text-xs font-mono hover:bg-neutral-800 transition-colors flex justify-between items-center ${p.symbol === selected ? "text-blue-400" : "text-neutral-300"}`}
+              >
+                <span>{p.symbol}</span>
+                {p.data_source && <span className="text-[9px] text-neutral-500 uppercase">{p.data_source}</span>}
+              </button>
+            ))}
+            {query.trim() && !filtered.find(p => p.symbol.toUpperCase() === query.toUpperCase()) && (
+              <div className="px-3 py-2 text-[10px] text-neutral-500">
+                Press Enter to analyze <span className="text-white">{query.toUpperCase()}</span>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -228,7 +267,7 @@ export default function App() {
   const [selectedSource, setSelectedSource] = useState("");
   const [signal, setSignal]       = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
-  const [portfolio, setPortfolio] = useState({ equity: 0, cash: 0, pnl: 0 });
+  const [portfolio, setPortfolio] = useState({ equity: 0, cash: 0, pnl: 0, currency: "INR", positions: {} });
   const [sysMetrics, setSysMetrics] = useState({ ram_used_gb: 0, ram_total_gb: 8, ram_pct: 0, cpu_pct: 0, disk_pct: 0 });
   const [apiOk, setApiOk]         = useState(true);
   const [events, setEvents]       = useState([]);
@@ -284,7 +323,7 @@ export default function App() {
     async function poll() {
       try {
         const [port, sys] = await Promise.all([fetchPortfolio(), fetchSystem()]);
-        setPortfolio({ equity: port.equity, cash: port.cash, pnl: (port.daily_pnl_pct || 0) * 100 });
+        setPortfolio({ equity: port.equity, cash: port.cash, pnl: (port.daily_pnl_pct || 0) * 100, currency: port.currency || "INR", positions: port.positions || {} });
         setSysMetrics(sys);
         setApiOk(true);
       } catch { /* non-fatal */ }
@@ -361,6 +400,11 @@ export default function App() {
           <PairDropdown pairs={pairs} selected={selectedAsset} onSelect={handleSelectPair} />
 
           <div className="flex flex-col items-end">
+            <span className="text-neutral-500 uppercase text-xs">Available Capital</span>
+            <span className="font-bold text-emerald-400">{fmtMoney(portfolio.cash, portfolio.currency)}</span>
+          </div>
+
+          <div className="flex flex-col items-end">
             <span className="text-neutral-500 uppercase text-xs">System Time (UTC)</span>
             <span className="font-medium">{time.toISOString().split("T")[1].split(".")[0]}</span>
           </div>
@@ -422,9 +466,7 @@ export default function App() {
                   <div>
                     <div className="text-xs text-neutral-500 uppercase mb-1">Equity</div>
                     <div className="text-sm font-semibold text-blue-400">
-                      {portfolio.equity > 1000
-                        ? `$${(portfolio.equity / 1000).toFixed(1)}k`
-                        : `₹${portfolio.equity.toFixed(2)}`}
+                      {fmtMoney(portfolio.equity, portfolio.currency)}
                     </div>
                   </div>
                   {allocationPct && (
@@ -548,7 +590,7 @@ export default function App() {
           </div>
 
           {/* Live Terminal */}
-          <div className="bg-neutral-950 border border-neutral-800 rounded-xl flex flex-col overflow-hidden flex-grow" style={{ minHeight: "220px" }}>
+          <div className="bg-neutral-950 border border-neutral-800 rounded-xl flex flex-col overflow-hidden flex-grow" style={{ minHeight: "200px" }}>
             <div className="p-3 border-b border-neutral-800 flex items-center gap-2 bg-neutral-900">
               <Terminal className="h-4 w-4 text-neutral-500" />
               <h2 className="text-xs font-bold text-neutral-400 uppercase">Live Output</h2>
@@ -566,6 +608,67 @@ export default function App() {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* ── Open Positions (full width) ── */}
+      <div className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-neutral-800 flex justify-between items-center">
+          <h2 className="text-xs font-bold text-neutral-300 uppercase tracking-wider flex items-center gap-2">
+            <TrendingUp className="h-3.5 w-3.5 text-neutral-500" />
+            Open Positions
+            <span className="text-neutral-600 font-normal">{Object.keys(portfolio.positions).length} active</span>
+          </h2>
+          <div className="flex items-center gap-4 text-[10px] text-neutral-500">
+            <span>Equity: <span className="text-white font-bold">{fmtMoney(portfolio.equity, portfolio.currency)}</span></span>
+            <span>Cash: <span className="text-emerald-400 font-bold">{fmtMoney(portfolio.cash, portfolio.currency)}</span></span>
+            <span className={portfolio.pnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
+              Daily P&L: {portfolio.pnl >= 0 ? "+" : ""}{portfolio.pnl.toFixed(2)}%
+            </span>
+          </div>
+        </div>
+        {Object.keys(portfolio.positions).length === 0 ? (
+          <div className="p-6 flex items-center justify-center text-neutral-600 text-xs gap-2">
+            <TrendingUp className="h-4 w-4 opacity-40" />
+            No open positions — executed signals will appear here
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs font-mono">
+              <thead>
+                <tr className="border-b border-neutral-800 text-neutral-500">
+                  <th className="text-left px-4 py-2">Symbol</th>
+                  <th className="text-right px-4 py-2">Qty</th>
+                  <th className="text-right px-4 py-2">Avg Price</th>
+                  <th className="text-right px-4 py-2">Value</th>
+                  <th className="text-right px-4 py-2">Side</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(portfolio.positions).map(([sym, pos]) => (
+                  <tr key={sym} className="border-b border-neutral-800/50 hover:bg-neutral-800/30">
+                    <td className="px-4 py-2.5 text-white font-bold">{sym}</td>
+                    <td className="px-4 py-2.5 text-right text-neutral-300">{pos.qty ?? "—"}</td>
+                    <td className="px-4 py-2.5 text-right text-neutral-300">
+                      {pos.avg_price ? fmtMoney(pos.avg_price, portfolio.currency) : "—"}
+                    </td>
+                    <td className="px-4 py-2.5 text-right text-neutral-200">
+                      {pos.value ? fmtMoney(pos.value, portfolio.currency) : "—"}
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] ${
+                        (pos.side || "buy") === "buy"
+                          ? "bg-emerald-500/20 text-emerald-400"
+                          : "bg-rose-500/20 text-rose-400"
+                      }`}>
+                        {(pos.side || "BUY").toUpperCase()}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -121,13 +121,42 @@ class RiskEngine:
                 sanitization_diff=["Size below minimum trading floor"],
             )
 
-        if scaled_down:
+        position_usd = portfolio.equity * approved_pct
+
+        # ── Gate 3b: Minimum Lot Check ──────────────────────────────────────
+        # For whole-share markets (NSE/BSE), the minimum order is 1 share.
+        # If the approved position budget can't buy even 1 share, scale up to
+        # 1 share — but only if 1 share ≤ 40% of available cash.
+        if current_price > 0 and position_usd < current_price:
+            one_share_pct = current_price / portfolio.equity if portfolio.equity > 0 else 1.0
+            if one_share_pct > 0.40:
+                return RiskCheckResult(
+                    status=RiskStatus.REJECTED,
+                    approved_position_size_pct=0.0,
+                    approved_position_size_usd=0.0,
+                    stop_loss_price=0.0,
+                    take_profit_price=0.0,
+                    rejection_reasons=[
+                        f"Insufficient capital: 1 share costs {current_price:.0f} "
+                        f"({one_share_pct:.0%} of equity), exceeds 40% limit"
+                    ],
+                    warnings=warnings,
+                    sanitization_diff=["Rejected: cannot afford minimum lot"],
+                )
+            # Scale up to exactly 1 share
+            approved_pct = one_share_pct
+            position_usd = current_price
+            scaled_down = True
+            sanitization_diff.append(
+                f"Size raised to 1-share minimum: {current_price:.0f} "
+                f"({approved_pct:.2%} of equity)"
+            )
+
+        if scaled_down and not any("minimum" in s for s in sanitization_diff):
             warnings.append(f"Position scaled from {desired_pct:.2%} → {approved_pct:.2%}")
             sanitization_diff.append(
                 f"size cut {desired_pct * 100:.2f}% -> {approved_pct * 100:.2f}% by exposure limits"
             )
-
-        position_usd = portfolio.equity * approved_pct
 
         # ── Gate 4: Stop Loss / Take Profit Prices ──────────────────────────
         sl_pct = max(signal.suggested_stop_loss_pct, self.cfg.max_trade_drawdown)
