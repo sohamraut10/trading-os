@@ -56,73 +56,64 @@ function SignalIcon({ action, size = 14 }) {
 }
 
 // ── TradingView chart ─────────────────────────────────────────────────────────
-
-let _tvScriptPromise = null;
-function loadTVScript() {
-  if (_tvScriptPromise) return _tvScriptPromise;
-  _tvScriptPromise = new Promise((resolve, reject) => {
-    if (window.TradingView) { resolve(); return; }
-    const s = document.createElement("script");
-    s.src = "https://s3.tradingview.com/tv.js";
-    s.async = true;
-    s.onload = resolve;
-    s.onerror = reject;
-    document.head.appendChild(s);
-  });
-  return _tvScriptPromise;
-}
+// Uses the Advanced Chart embed widget (free, works with NSE/BSE data)
+// instead of tv.js Widget API which blocks NSE behind a subscription.
 
 function TradingViewChart({ symbol }) {
-  const containerId = "tv_main_chart";
-  const widgetRef = useRef(null);
+  const containerRef = useRef(null);
+  const tvSymbol = toTVSymbol(symbol);
 
   useEffect(() => {
-    if (!symbol) return;
-    loadTVScript().then(() => {
-      if (widgetRef.current) { try { widgetRef.current.remove(); } catch (_) {} }
-      const el = document.getElementById(containerId);
-      if (!el) return;
-      el.innerHTML = "";
-      widgetRef.current = new window.TradingView.widget({
-        autosize: true,
-        symbol: toTVSymbol(symbol),
-        interval: "60",
-        timezone: "Asia/Kolkata",
-        theme: "dark",
-        style: "1",
-        locale: "en",
-        toolbar_bg: "#171717",
-        enable_publishing: false,
-        hide_top_toolbar: false,
-        hide_legend: false,
-        withdateranges: true,
-        allow_symbol_change: true,
-        save_image: true,
-        studies: [
-          "RSI@tv-basicstudies",
-          "MACD@tv-basicstudies",
-          "Volume@tv-basicstudies",
-          "BB@tv-basicstudies",
-        ],
-        show_popup_button: true,
-        popup_width: "1200",
-        popup_height: "700",
-        container_id: containerId,
-        backgroundColor: "rgba(10,10,10,1)",
-        gridColor: "rgba(23,23,23,1)",
-        details: true,
-        hotlist: true,
-        calendar: false,
-      });
-    }).catch(() => {});
-    return () => {
-      if (widgetRef.current) { try { widgetRef.current.remove(); } catch (_) {} widgetRef.current = null; }
-    };
-  }, [symbol]);
+    const el = containerRef.current;
+    if (!el || !tvSymbol) return;
+    el.innerHTML = "";
+
+    const widgetDiv = document.createElement("div");
+    widgetDiv.className = "tradingview-widget-container__widget";
+    widgetDiv.style.cssText = "height:100%;width:100%";
+    el.appendChild(widgetDiv);
+
+    const script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+    script.async = true;
+    script.textContent = JSON.stringify({
+      autosize: true,
+      symbol: tvSymbol,
+      interval: "60",
+      timezone: "Asia/Kolkata",
+      theme: "dark",
+      style: "1",
+      locale: "en",
+      toolbar_bg: "#171717",
+      enable_publishing: false,
+      withdateranges: true,
+      allow_symbol_change: true,
+      save_image: true,
+      studies: [
+        "RSI@tv-basicstudies",
+        "MACD@tv-basicstudies",
+        "Volume@tv-basicstudies",
+        "BB@tv-basicstudies",
+      ],
+      show_popup_button: true,
+      backgroundColor: "rgba(10,10,10,1)",
+      details: true,
+      hotlist: true,
+      calendar: false,
+    });
+    el.appendChild(script);
+
+    return () => { el.innerHTML = ""; };
+  }, [tvSymbol]);
 
   return (
-    <div className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden flex flex-col" style={{ height: 540 }}>
-      <div id={containerId} style={{ flex: 1, minHeight: 0 }} />
+    <div className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden" style={{ height: 540 }}>
+      <div
+        ref={containerRef}
+        className="tradingview-widget-container"
+        style={{ height: "100%", width: "100%" }}
+      />
     </div>
   );
 }
