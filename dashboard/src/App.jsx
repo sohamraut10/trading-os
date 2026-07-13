@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Activity, Brain, ShieldAlert, TrendingUp, TrendingDown, Minus,
+  Activity, BarChart2, Brain, ShieldAlert, TrendingUp, TrendingDown, Minus,
   Server, Terminal, Cpu, Globe, Database, Lock, Zap, ChevronDown,
   RefreshCw, AlertTriangle, CheckCircle, Search,
 } from 'lucide-react';
@@ -11,7 +11,22 @@ import { connectEvents } from './eventsPoller';
 
 const DEFAULT_WATCHLIST = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN"];
 
-// Map internal symbols → TradingView symbol format
+const AGENT_META = {
+  Technical: { label: "Technical Analyst",  icon: BarChart2,   color: "blue",   indicators: ["RSI", "MACD", "EMA", "VWAP"] },
+  Sentiment: { label: "Sentiment & News",    icon: Globe,       color: "purple", indicators: ["LLM NLP", "Keywords"] },
+  Quant:     { label: "Quant & Statistical", icon: TrendingUp,  color: "orange", indicators: ["Hurst", "Z-Score", "Kelly EV"] },
+  OrderFlow: { label: "Market Structure",    icon: Database,    color: "indigo", indicators: ["Volume Profile", "S/R", "Delta"] },
+};
+
+const COLOR = {
+  blue:   { bg: "bg-blue-500/10",   border: "border-blue-500/20",   icon: "text-blue-400",   conf: "text-blue-400" },
+  purple: { bg: "bg-purple-500/10", border: "border-purple-500/20", icon: "text-purple-400", conf: "text-purple-400" },
+  orange: { bg: "bg-orange-500/10", border: "border-orange-500/20", icon: "text-orange-400", conf: "text-orange-400" },
+  indigo: { bg: "bg-indigo-500/10", border: "border-indigo-500/20", icon: "text-indigo-400", conf: "text-indigo-400" },
+};
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
 function toTVSymbol(symbol) {
   if (!symbol) return "NSE:NIFTY50";
   const s = symbol.toUpperCase();
@@ -19,14 +34,12 @@ function toTVSymbol(symbol) {
   if (s.endsWith("BUSD"))  return `BINANCE:${s}`;
   if (s === "BTCUSD")      return "COINBASE:BTCUSD";
   if (s.length === 6 && /^(EUR|GBP|AUD|NZD|USD|JPY|CAD|CHF)/.test(s)) return `FX_IDC:${s}`;
-  if (["NIFTY","NIFTY50"].includes(s)) return "NSE:NIFTY50";
-  if (s === "BANKNIFTY")   return "NSE:BANKNIFTY";
+  if (["NIFTY", "NIFTY50"].includes(s)) return "NSE:NIFTY50";
+  if (s === "BANKNIFTY")  return "NSE:BANKNIFTY";
   if (["AAPL","MSFT","NVDA","TSLA","AMZN","GOOGL","META"].includes(s)) return `NASDAQ:${s}`;
   if (["SPY","QQQ","IWM"].includes(s)) return `AMEX:${s}`;
   return `NSE:${s}`;
 }
-
-// ── helpers ───────────────────────────────────────────────────────────────────
 
 function fmtMoney(val, currency = "INR") {
   const sym = currency === "USD" ? "$" : "₹";
@@ -43,22 +56,21 @@ function signalCls(action) {
   return "text-amber-400";
 }
 
+function signalBadge(action) {
+  if (action === "BUY")  return "bg-emerald-500/20 text-emerald-400 border border-emerald-500/20";
+  if (action === "SELL") return "bg-rose-500/20 text-rose-400 border border-rose-500/20";
+  return "bg-neutral-700 text-neutral-300 border border-neutral-600";
+}
+
 function signalBg(action) {
   if (action === "BUY")  return "bg-emerald-500/10 border-emerald-500/30 text-emerald-400";
   if (action === "SELL") return "bg-rose-500/10 border-rose-500/30 text-rose-400";
   return "bg-amber-500/10 border-amber-500/30 text-amber-400";
 }
 
-function SignalIcon({ action, size = 14 }) {
-  if (action === "BUY")  return <TrendingUp  style={{ width: size, height: size }} />;
-  if (action === "SELL") return <TrendingDown style={{ width: size, height: size }} />;
-  return <Minus style={{ width: size, height: size }} />;
-}
-
 // ── TradingView chart ─────────────────────────────────────────────────────────
-// Direct iframe embed — same mechanism TradingView's own scripts use internally.
-// Works for NSE/BSE on the free tier (15-min delayed). key={tvSymbol} forces
-// React to remount the iframe on symbol change rather than keeping a stale src.
+// Direct iframe — same URL TradingView's embed scripts generate internally.
+// Free tier (15-min delayed), works for NSE without a subscription.
 
 const TV_STUDIES = encodeURIComponent(
   "RSI@tv-basicstudies,MACD@tv-basicstudies,Volume@tv-basicstudies,BB@tv-basicstudies"
@@ -76,7 +88,7 @@ function TradingViewChart({ symbol }) {
   return (
     <div
       className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden"
-      style={{ height: 540 }}
+      style={{ height: 460 }}
     >
       <iframe
         key={tvSymbol}
@@ -90,7 +102,7 @@ function TradingViewChart({ symbol }) {
   );
 }
 
-// ── pair dropdown with search ─────────────────────────────────────────────────
+// ── pair dropdown ─────────────────────────────────────────────────────────────
 
 function PairDropdown({ pairs, selected, onSelect }) {
   const [open, setOpen]   = useState(false);
@@ -110,43 +122,48 @@ function PairDropdown({ pairs, selected, onSelect }) {
     ? pairs.filter(p => p.symbol.toUpperCase().includes(query.toUpperCase()))
     : pairs;
 
-  const submit = () => {
-    const sym = query.trim().toUpperCase();
-    if (!sym) return;
-    onSelect({ symbol: sym, data_source: "" });
-    setQuery(""); setOpen(false);
+  const handleCustom = (e) => {
+    if (e.key === "Enter" && query.trim()) {
+      onSelect({ symbol: query.trim().toUpperCase(), data_source: "" });
+      setQuery(""); setOpen(false);
+    }
   };
 
   return (
     <div className="relative" ref={ref}>
-      <button onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg px-3 py-1.5 text-sm font-mono transition-colors">
-        <Search className="h-3 w-3 text-neutral-500" />
-        <span className="text-white font-bold">{selected || "Select"}</span>
-        <ChevronDown className="h-3 w-3 text-neutral-400" />
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-neutral-700 bg-neutral-800 text-sm font-bold hover:border-neutral-600 transition-colors"
+      >
+        <span>{selected}</span>
+        <ChevronDown className="h-3 w-3 text-neutral-500" />
       </button>
       {open && (
-        <div className="absolute right-0 mt-1 w-56 bg-neutral-900 border border-neutral-700 rounded-xl shadow-2xl z-50 flex flex-col overflow-hidden">
+        <div className="absolute top-full left-0 mt-1 w-56 bg-neutral-900 border border-neutral-700 rounded-xl shadow-xl z-50 overflow-hidden">
           <div className="p-2 border-b border-neutral-800">
-            <input ref={inputRef} value={query} onChange={e => setQuery(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && submit()}
-              placeholder="Type symbol + Enter…"
-              className="w-full bg-neutral-800 text-xs text-white placeholder-neutral-600 rounded-lg px-2.5 py-1.5 outline-none border border-neutral-700 focus:border-blue-500 transition-colors" />
+            <div className="flex items-center gap-2 px-2 py-1 bg-neutral-800 rounded-lg">
+              <Search className="h-3 w-3 text-neutral-500 flex-shrink-0" />
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                onKeyDown={handleCustom}
+                placeholder="Search or type symbol + Enter"
+                className="bg-transparent text-xs text-neutral-200 outline-none w-full placeholder-neutral-600"
+              />
+            </div>
           </div>
           <div className="max-h-60 overflow-y-auto">
             {filtered.map(p => (
-              <button key={`${p.symbol}-${p.data_source || "x"}`}
-                onClick={() => { onSelect(p); setQuery(""); setOpen(false); }}
-                className={`w-full text-left px-3 py-2 text-xs font-mono hover:bg-neutral-800 flex justify-between items-center ${p.symbol === selected ? "text-blue-400" : "text-neutral-300"}`}>
-                <span>{p.symbol}</span>
-                {p.data_source && <span className="text-[9px] text-neutral-600 uppercase">{p.data_source}</span>}
+              <button
+                key={p.symbol}
+                onClick={() => { onSelect(p); setOpen(false); setQuery(""); }}
+                className={`w-full text-left px-4 py-2 text-xs hover:bg-neutral-800 flex justify-between items-center transition-colors ${p.symbol === selected ? "text-blue-400 bg-neutral-800/50" : "text-neutral-300"}`}
+              >
+                <span className="font-bold">{p.symbol}</span>
+                <span className="text-neutral-600 text-[10px]">{p.data_source || "NSE"}</span>
               </button>
             ))}
-            {query.trim() && !filtered.find(p => p.symbol.toUpperCase() === query.toUpperCase()) && (
-              <div className="px-3 py-2 text-[10px] text-neutral-500 border-t border-neutral-800">
-                Press Enter → analyze <span className="text-white font-bold">{query.toUpperCase()}</span>
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -154,7 +171,7 @@ function PairDropdown({ pairs, selected, onSelect }) {
   );
 }
 
-// ── opportunity scanner strip ─────────────────────────────────────────────────
+// ── scanner card ─────────────────────────────────────────────────────────────
 
 function ScannerCard({ symbol, result, isActive, onClick }) {
   const action    = result?.action;
@@ -164,18 +181,18 @@ function ScannerCard({ symbol, result, isActive, onClick }) {
   const price     = result?.price;
 
   return (
-    <button onClick={onClick}
+    <button
+      onClick={onClick}
       className={`flex-shrink-0 rounded-xl border p-3 text-left transition-all cursor-pointer w-36
         ${isActive
           ? "border-blue-500/60 bg-blue-500/5 shadow-[0_0_12px_rgba(59,130,246,0.2)]"
-          : "border-neutral-800 bg-neutral-900 hover:border-neutral-700"}`}>
+          : "border-neutral-800 bg-neutral-900 hover:border-neutral-700"}`}
+    >
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-xs font-bold text-white">{symbol}</span>
         {scanning
           ? <RefreshCw className="h-3 w-3 text-neutral-600 animate-spin" />
-          : <span className={`text-[10px] font-bold ${signalCls(action)}`}>
-              {action || "—"}
-            </span>
+          : <span className={`text-[10px] font-bold ${signalCls(action)}`}>{action || "—"}</span>
         }
       </div>
       {scanning ? (
@@ -206,66 +223,44 @@ function ScannerCard({ symbol, result, isActive, onClick }) {
   );
 }
 
-// ── compact agent votes panel ─────────────────────────────────────────────────
+// ── full agent card (detailed, from previous UI) ─────────────────────────────
 
-const AGENT_META = {
-  Technical: { label: "Technical", color: "blue" },
-  Sentiment: { label: "Sentiment", color: "purple" },
-  Quant:     { label: "Quant",     color: "orange" },
-  OrderFlow: { label: "Structure", color: "indigo" },
-};
+function AgentCard({ agent }) {
+  const meta = AGENT_META[agent.name] || { label: agent.name, icon: Cpu, color: "blue", indicators: [] };
+  const clr  = COLOR[meta.color];
+  const Icon = meta.icon;
+  const dim  = agent.confidence < 55;
 
-const CONF_COLOR = {
-  blue:   "text-blue-400 bg-blue-500/10",
-  purple: "text-purple-400 bg-purple-500/10",
-  orange: "text-orange-400 bg-orange-500/10",
-  indigo: "text-indigo-400 bg-indigo-500/10",
-};
-
-function AgentVotes({ agents, daVeto }) {
-  const active = (agents || []).filter(a => a.name !== "DevilsAdvocate");
   return (
-    <div className="grid grid-cols-2 gap-2">
-      {active.map(a => {
-        const meta = AGENT_META[a.name] || { label: a.name, color: "blue" };
-        const clr  = CONF_COLOR[meta.color];
-        const warn = (a.warnings || []).length > 0;
-        return (
-          <div key={a.name} className="bg-neutral-800/60 rounded-lg p-2.5 border border-neutral-700/50">
-            <div className="flex justify-between items-center mb-1">
-              <span className="text-[10px] text-neutral-400 font-bold">{meta.label}</span>
-              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${signalBg(a.decision)}`}>
-                {warn ? "WARN" : (a.decision || "—")}
-              </span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <div className="flex-1 h-0.5 bg-neutral-700 rounded-full overflow-hidden">
-                <div className={`h-full ${a.decision === "BUY" ? "bg-emerald-500" : a.decision === "SELL" ? "bg-rose-500" : "bg-amber-500"}`}
-                  style={{ width: `${a.confidence || 0}%` }} />
-              </div>
-              <span className={`text-[10px] font-bold ${clr} px-1 rounded`}>{(a.confidence || 0).toFixed(0)}%</span>
-            </div>
-          </div>
-        );
-      })}
-      {daVeto && (
-        <div className={`col-span-2 rounded-lg p-2.5 border text-[10px] ${
-          daVeto.decision === "SELL"
-            ? "border-rose-500/30 bg-rose-500/5 text-rose-400"
-            : "border-emerald-500/20 bg-emerald-500/5 text-emerald-400"
-        }`}>
-          <div className="flex items-center gap-1.5 mb-0.5">
-            <ShieldAlert className="h-3 w-3" />
-            <span className="font-bold">Devil's Advocate: {daVeto.decision === "SELL" ? "VETO" : "PASS"}</span>
-          </div>
-          <p className="text-neutral-400 line-clamp-2">{daVeto.reasoning?.slice(0, 100)}</p>
+    <div className={`bg-neutral-900 border border-neutral-800 p-4 rounded-xl flex items-center gap-4 ${dim ? "opacity-60" : ""}`}>
+      <div className={`h-11 w-11 rounded-lg ${clr.bg} ${clr.border} border flex items-center justify-center flex-shrink-0`}>
+        <Icon className={`h-5 w-5 ${clr.icon}`} />
+      </div>
+      <div className="flex-grow min-w-0">
+        <div className="flex justify-between items-center mb-1">
+          <h3 className="text-xs font-bold text-neutral-200">{meta.label}</h3>
+          <span className={`text-xs font-bold ${clr.conf}`}>{agent.confidence.toFixed(0)}%</span>
         </div>
-      )}
+        <p className="text-[10px] text-neutral-500 mb-2 truncate">{meta.indicators.join(", ")}</p>
+        <div className="flex gap-1.5 flex-wrap">
+          {agent.indicators && Object.entries(agent.indicators).slice(0, 2).map(([k, v]) => (
+            <span key={k} className="text-[10px] px-1.5 py-0.5 bg-neutral-800 text-neutral-300 rounded capitalize">
+              {k.replace(/_/g, " ")}: {typeof v === "number" ? v.toFixed(2) : String(v).slice(0, 12)}
+            </span>
+          ))}
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${signalBadge(agent.decision)}`}>
+            {agent.decision}
+          </span>
+          {dim && (
+            <span className="text-[10px] text-amber-500 ml-auto">Below 55%</span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
 
-// ── infra row ─────────────────────────────────────────────────────────────────
+// ── infra + progress ──────────────────────────────────────────────────────────
 
 function InfraRow({ icon: Icon, label, status, ok }) {
   return (
@@ -299,8 +294,7 @@ export default function App() {
   const [sys, setSys]           = useState({ ram_used_gb: 0, ram_total_gb: 8, ram_pct: 0, cpu_pct: 0, disk_pct: 0 });
   const [apiOk, setApiOk]       = useState(true);
   const [events, setEvents]     = useState([]);
-  const [scanResults, setScanResults] = useState({});  // symbol → result
-  const [scanQueue, setScanQueue]     = useState([]);
+  const [scanResults, setScanResults] = useState({});
   const scanActiveRef = useRef(false);
   const watchlistRef  = useRef(DEFAULT_WATCHLIST);
 
@@ -310,18 +304,18 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
-  // load pairs
+  // load pairs from API
   useEffect(() => {
     fetchPairSuggestions().then(d => {
       const all = d.pairs || [];
       setPairs(all);
-      const nse = all.filter(p => !p.data_source || p.data_source === "");
-      const wl = nse.map(p => p.symbol).filter(Boolean);
+      const wl = all.map(p => p.symbol).filter(Boolean);
       if (wl.length) watchlistRef.current = wl;
+      if (all.length) setSelected({ symbol: all[0].symbol, data_source: all[0].data_source || "" });
     }).catch(() => {});
   }, []);
 
-  // portfolio poll every 10s
+  // portfolio + system metrics every 10s
   useEffect(() => {
     const poll = async () => {
       try {
@@ -336,7 +330,7 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
-  // analyze selected asset, re-run every 60s
+  // analyze selected asset on change + every 60s
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
@@ -347,24 +341,22 @@ export default function App() {
         if (!cancelled) {
           setSignal(r);
           setApiOk(true);
-          addEvent("CONSENSUS", `${selected.symbol} → ${r.final_decision} (${(r.confidence||0).toFixed(1)}%)`);
-          // update scanner result for selected asset
-          setScanResults(prev => ({ ...prev, [selected.symbol]: { action: r.action, confidence: r.confidence, final_decision: r.final_decision, risk: r.risk_check, price: r.current_price } }));
+          addEvent("CONSENSUS", `${selected.symbol} → ${r.final_decision} (${(r.confidence || 0).toFixed(1)}%)`);
+          setScanResults(prev => ({ ...prev, [selected.symbol]: { action: r.action, confidence: r.confidence, risk: r.risk_check, price: r.current_price } }));
         }
       } catch { if (!cancelled) setApiOk(false); }
-      finally { if (!cancelled) setAnalyzing(false); }
+      finally  { if (!cancelled) setAnalyzing(false); }
     };
     run();
     const t = setInterval(run, 60_000);
     return () => { cancelled = true; clearInterval(t); };
   }, [selected.symbol]);
 
-  // background scanner: cycle through full watchlist, 1 asset at a time
+  // background scanner: cycle through watchlist with 4s gap between assets
   const runScanner = useCallback(async () => {
     if (scanActiveRef.current) return;
     scanActiveRef.current = true;
     const wl = watchlistRef.current;
-    // init null placeholders for unseen assets
     setScanResults(prev => {
       const next = { ...prev };
       wl.forEach(s => { if (!(s in next)) next[s] = null; });
@@ -374,16 +366,14 @@ export default function App() {
       if (!scanActiveRef.current) break;
       try {
         const r = await analyzeAsset(sym);
-        setScanResults(prev => ({ ...prev, [sym]: { action: r.action, confidence: r.confidence, final_decision: r.final_decision, risk: r.risk_check, price: r.current_price } }));
-        addEvent("SCAN", `${sym} → ${r.final_decision} ${r.action ? "(" + (r.confidence||0).toFixed(0) + "%)" : ""}`);
+        setScanResults(prev => ({ ...prev, [sym]: { action: r.action, confidence: r.confidence, risk: r.risk_check, price: r.current_price } }));
+        addEvent("SCAN", `${sym} → ${r.final_decision} ${r.action ? `(${(r.confidence||0).toFixed(0)}%)` : ""}`);
       } catch { /* skip */ }
-      // brief pause between stocks to avoid hammering Dhan
       await new Promise(res => setTimeout(res, 4000));
     }
     scanActiveRef.current = false;
   }, []);
 
-  // run scanner on mount and every 5 min
   useEffect(() => {
     runScanner();
     const t = setInterval(runScanner, 5 * 60_000);
@@ -391,7 +381,8 @@ export default function App() {
   }, [runScanner]);
 
   // event stream
-  const addEvent = (tag, msg) => setEvents(prev => [{ tag, msg, ts: new Date().toLocaleTimeString() }, ...prev].slice(0, 60));
+  const addEvent = (tag, msg) =>
+    setEvents(prev => [{ tag, msg, ts: new Date().toLocaleTimeString("en-IN") }, ...prev].slice(0, 60));
 
   useEffect(() => {
     const p = connectEvents(
@@ -406,26 +397,26 @@ export default function App() {
   const confidence = signal?.confidence || 0;
   const agents     = signal?.agents || [];
   const daVeto     = agents.find(a => a.name === "DevilsAdvocate");
+  const activeAgents = agents.filter(a => a.name !== "DevilsAdvocate");
   const risk       = signal?.risk_check;
   const isTradeable = risk?.status === "APPROVED" || risk?.status === "SCALED_DOWN";
+  const allocationPct = risk?.approved_size_pct ? (risk.approved_size_pct * 100).toFixed(1) : null;
 
   const tagColor = tag => {
     if (tag === "CONSENSUS" || tag === "FinalCall") return "text-purple-400";
-    if (tag === "SCAN")      return "text-blue-400";
-    if (tag.includes("ERR")) return "text-rose-400";
+    if (tag === "SCAN")               return "text-blue-400";
+    if (tag.includes("ERR"))          return "text-rose-400";
     if (tag.includes("BAR") || tag.includes("Bar")) return "text-emerald-400";
     return "text-neutral-500";
   };
 
-  // sort watchlist: BUY/SELL first, highest confidence
   const watchlist = watchlistRef.current;
   const sortedWL  = [...watchlist].sort((a, b) => {
     const ra = scanResults[a], rb = scanResults[b];
-    const scoreA = ra?.action && ra.action !== "HOLD" ? (ra.confidence || 0) : 0;
-    const scoreB = rb?.action && rb.action !== "HOLD" ? (rb.confidence || 0) : 0;
-    return scoreB - scoreA;
+    const sa = ra?.action && ra.action !== "HOLD" ? (ra.confidence || 0) : 0;
+    const sb = rb?.action && rb.action !== "HOLD" ? (rb.confidence || 0) : 0;
+    return sb - sa;
   });
-
   const opportunities = sortedWL.filter(s => {
     const r = scanResults[s];
     return r && r.action && r.action !== "HOLD" && r.confidence >= 60;
@@ -434,8 +425,8 @@ export default function App() {
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-50 font-mono flex flex-col">
 
-      {/* ── Header ── */}
-      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3 px-5 py-3 border-b border-neutral-800 bg-neutral-900/60 backdrop-blur sticky top-0 z-40">
+      {/* ── Sticky Header ── */}
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3 px-5 py-3 border-b border-neutral-800 bg-neutral-900/70 backdrop-blur sticky top-0 z-40">
         <div className="flex items-center gap-3">
           <div className="h-9 w-9 bg-blue-600/20 text-blue-500 rounded-lg flex items-center justify-center border border-blue-500/30 shadow-[0_0_12px_rgba(59,130,246,0.3)]">
             <Activity className="h-5 w-5" />
@@ -465,7 +456,9 @@ export default function App() {
           </div>
           <div className="flex flex-col items-end">
             <span className="text-[10px] text-neutral-500 uppercase">Time IST</span>
-            <span className="font-medium">{new Date(time.getTime() + 5.5*3600000).toISOString().slice(11,19)}</span>
+            <span className="font-medium tabular-nums">
+              {new Date(time.getTime() + 5.5 * 3600000).toISOString().slice(11, 19)}
+            </span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className={`h-2 w-2 rounded-full ${apiOk ? "bg-emerald-400 animate-pulse" : "bg-rose-400"}`} />
@@ -476,17 +469,17 @@ export default function App() {
         </div>
       </header>
 
-      {/* ── Opportunity Scanner strip ── */}
+      {/* ── Opportunity Scanner Strip ── */}
       <div className="px-5 py-3 border-b border-neutral-800 bg-neutral-900/30">
         <div className="flex items-center gap-2 mb-2">
           <RefreshCw className={`h-3 w-3 text-neutral-600 ${scanActiveRef.current ? "animate-spin" : ""}`} />
           <span className="text-[10px] text-neutral-500 uppercase font-bold">Live Scanner</span>
           {opportunities.length > 0 && (
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-400 font-bold">
-              {opportunities.length} opportunity{opportunities.length > 1 ? "s" : ""}
+              {opportunities.length} signal{opportunities.length > 1 ? "s" : ""}
             </span>
           )}
-          <span className="text-[10px] text-neutral-600 ml-auto">auto-refresh every 5 min · click to deep-dive</span>
+          <span className="text-[10px] text-neutral-700 ml-auto">auto-refresh every 5 min · click to analyze</span>
         </div>
         <div className="flex gap-2 overflow-x-auto pb-1">
           {sortedWL.map(sym => (
@@ -501,139 +494,232 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── Main body ── */}
-      <div className="flex flex-col lg:flex-row gap-0 flex-1 min-h-0">
-
-        {/* ── LEFT: TradingView chart ── */}
-        <div className="lg:w-[62%] p-5 border-r border-neutral-800">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-bold text-white">{selected.symbol}</span>
-              <span className="text-[10px] text-neutral-500">{toTVSymbol(selected.symbol)}</span>
-            </div>
-            {analyzing && <span className="text-[10px] text-neutral-500 animate-pulse flex items-center gap-1"><RefreshCw className="h-3 w-3 animate-spin" /> analyzing…</span>}
+      {/* ── TradingView Chart (full width) ── */}
+      <div className="px-5 pt-5 pb-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-bold text-white">{selected.symbol}</span>
+            <span className="text-[10px] text-neutral-600">{toTVSymbol(selected.symbol)}</span>
           </div>
-          <TradingViewChart symbol={selected.symbol} />
+          {analyzing && (
+            <span className="text-[10px] text-neutral-500 animate-pulse flex items-center gap-1">
+              <RefreshCw className="h-3 w-3 animate-spin" /> analyzing…
+            </span>
+          )}
         </div>
+        <TradingViewChart symbol={selected.symbol} />
+      </div>
 
-        {/* ── RIGHT: signal + agents + infra ── */}
-        <div className="lg:w-[38%] flex flex-col overflow-y-auto" style={{ maxHeight: "calc(100vh - 130px)" }}>
+      {/* ── 3-Column Analysis Grid ── */}
+      <div className="px-5 pb-5 grid grid-cols-1 lg:grid-cols-12 gap-5">
 
-          {/* Consensus */}
-          <div className="p-5 border-b border-neutral-800">
-            <div className="flex items-center gap-2 mb-4">
-              <Brain className="h-4 w-4 text-purple-400" />
-              <span className="text-xs font-bold text-neutral-300 uppercase">Meta-Agent Consensus</span>
+        {/* ── Col 1 (4): Signal + Devil's Advocate ── */}
+        <div className="lg:col-span-4 flex flex-col gap-5">
+
+          {/* Meta-Agent Signal Card */}
+          <div className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden shadow-xl">
+            <div className="p-5 border-b border-neutral-800 bg-neutral-900/50 flex justify-between items-center">
+              <h2 className="text-sm font-bold text-neutral-300 flex items-center gap-2 uppercase tracking-wider">
+                <Brain className="h-4 w-4 text-purple-400" />
+                Meta-Agent Consensus
+              </h2>
+              {analyzing && <span className="text-[10px] text-neutral-500 animate-pulse">analyzing…</span>}
             </div>
-
-            {signal ? (
-              <div className="space-y-4">
-                {/* Big signal */}
-                <div className={`rounded-xl border p-4 flex items-center justify-between ${
-                  action === "BUY"  ? "border-emerald-500/30 bg-emerald-500/5" :
-                  action === "SELL" ? "border-rose-500/30 bg-rose-500/5" :
-                  "border-amber-500/20 bg-amber-500/5"
-                }`}>
-                  <div>
-                    <div className={`text-4xl font-black ${signalCls(action)}`}>
-                      {action || "HOLD"}
-                    </div>
-                    <div className="text-[10px] text-neutral-500 mt-1">{signal.final_decision}</div>
+            <div className="p-6 flex flex-col items-center justify-center">
+              {signal ? (
+                <>
+                  <div className={`text-5xl font-black mb-2 ${signalCls(action)}`}>
+                    {action || "HOLD"}
                   </div>
-                  <div className="text-right">
-                    <div className="text-2xl font-black text-white">{confidence.toFixed(0)}<span className="text-sm text-neutral-500">%</span></div>
-                    <div className="text-[10px] text-neutral-500">conviction</div>
-                  </div>
-                </div>
+                  <p className="text-sm text-neutral-400 mb-5">{signal.final_decision || "—"}</p>
 
-                {/* Capital / risk summary */}
-                {risk && (
-                  <div className={`rounded-lg border p-3 text-[11px] ${
-                    isTradeable ? "border-emerald-500/20 bg-emerald-500/5" : "border-neutral-700 bg-neutral-800/30"
-                  }`}>
-                    <div className="flex items-center gap-1.5 mb-1.5">
-                      {isTradeable
-                        ? <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />
-                        : <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
-                      }
-                      <span className={`font-bold ${isTradeable ? "text-emerald-400" : "text-amber-400"}`}>
-                        {isTradeable ? "Capital sufficient — tradeable" : risk.rejections?.[0] || "Not tradeable"}
-                      </span>
+                  <div className="w-full space-y-4">
+                    <div className="flex justify-between items-end">
+                      <span className="text-xs text-neutral-500 uppercase">Conviction Score</span>
+                      <span className="text-lg font-bold text-white">{confidence.toFixed(1)}%</span>
                     </div>
-                    {isTradeable && (
-                      <div className="grid grid-cols-3 gap-2 text-neutral-400 mt-2">
-                        <div>
-                          <div className="text-[9px] text-neutral-600 mb-0.5">SIZE</div>
-                          <div className="text-white font-bold">{((risk.approved_size_pct || 0)*100).toFixed(1)}%</div>
+                    <div className="h-2 w-full bg-neutral-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-700 shadow-[0_0_10px_rgba(52,211,153,0.5)]"
+                        style={{ width: `${confidence}%` }}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 pt-4 border-t border-neutral-800">
+                      <div>
+                        <div className="text-[10px] text-neutral-500 uppercase mb-1">Asset</div>
+                        <div className="text-sm font-semibold text-neutral-200">{signal.asset || selected.symbol}</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-neutral-500 uppercase mb-1">Equity</div>
+                        <div className="text-sm font-semibold text-blue-400">{fmtMoney(portfolio.equity, portfolio.currency)}</div>
+                      </div>
+                      {allocationPct && (
+                        <>
+                          <div>
+                            <div className="text-[10px] text-neutral-500 uppercase mb-1">Sizing</div>
+                            <div className="text-sm font-semibold text-neutral-200">Half-Kelly</div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-neutral-500 uppercase mb-1">Allocation</div>
+                            <div className="text-sm font-semibold text-blue-400">{allocationPct}%</div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Risk summary */}
+                    {risk && (
+                      <div className={`rounded-lg border p-3 text-[11px] mt-1 ${
+                        isTradeable ? "border-emerald-500/20 bg-emerald-500/5" : "border-neutral-700 bg-neutral-800/30"
+                      }`}>
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          {isTradeable
+                            ? <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />
+                            : <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />}
+                          <span className={`font-bold ${isTradeable ? "text-emerald-400" : "text-amber-400"}`}>
+                            {isTradeable ? "Capital sufficient" : risk.rejections?.[0] || "Not tradeable"}
+                          </span>
                         </div>
-                        <div>
-                          <div className="text-[9px] text-neutral-600 mb-0.5">STOP LOSS</div>
-                          <div className="text-rose-400 font-bold">₹{(risk.stop_loss_price || risk.sl_price || 0).toFixed(0)}</div>
-                        </div>
-                        <div>
-                          <div className="text-[9px] text-neutral-600 mb-0.5">TARGET</div>
-                          <div className="text-emerald-400 font-bold">₹{(risk.take_profit_price || risk.tp_price || 0).toFixed(0)}</div>
-                        </div>
+                        {isTradeable && (
+                          <div className="grid grid-cols-3 gap-2 text-neutral-400 mt-2">
+                            <div>
+                              <div className="text-[9px] text-neutral-600 mb-0.5">SIZE</div>
+                              <div className="text-white font-bold">{allocationPct}%</div>
+                            </div>
+                            <div>
+                              <div className="text-[9px] text-neutral-600 mb-0.5">STOP</div>
+                              <div className="text-rose-400 font-bold">₹{(risk.stop_loss_price || 0).toFixed(0)}</div>
+                            </div>
+                            <div>
+                              <div className="text-[9px] text-neutral-600 mb-0.5">TARGET</div>
+                              <div className="text-emerald-400 font-bold">₹{(risk.take_profit_price || 0).toFixed(0)}</div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
-                )}
-
-                {/* Reason */}
-                {signal.reason && (
-                  <p className="text-[10px] text-neutral-500 leading-relaxed line-clamp-3">{signal.reason}</p>
-                )}
-
-                {/* Agent votes */}
-                <AgentVotes agents={agents} daVeto={daVeto} />
-              </div>
-            ) : (
-              <div className="text-center py-8 text-neutral-600 text-xs">
-                <Brain className="h-8 w-8 mx-auto mb-2 opacity-30" />
-                <p>Click any scanner card to analyze</p>
-              </div>
-            )}
+                </>
+              ) : (
+                <div className="py-6 text-center text-neutral-600">
+                  <Brain className="h-8 w-8 mx-auto mb-2 opacity-30" />
+                  <p className="text-xs">Waiting for analysis…</p>
+                </div>
+              )}
+            </div>
           </div>
 
-          {/* Infra + system */}
-          <div className="p-5 border-b border-neutral-800">
-            <div className="flex items-center gap-2 mb-3">
-              <Server className="h-3.5 w-3.5 text-neutral-500" />
-              <span className="text-[11px] font-bold text-neutral-400 uppercase">Infrastructure</span>
+          {/* Devil's Advocate */}
+          <div className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden shadow-xl">
+            <div className="p-4 border-b border-neutral-800 bg-neutral-900/50 flex justify-between items-center">
+              <h2 className="text-sm font-bold text-neutral-300 flex items-center gap-2 uppercase tracking-wider">
+                <ShieldAlert className="h-4 w-4 text-rose-500" />
+                Devil's Advocate
+              </h2>
+              <span className={`text-xs px-2 py-1 rounded border ${
+                daVeto?.decision === "SELL"
+                  ? "bg-rose-500/10 text-rose-400 border-rose-500/20"
+                  : "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+              }`}>
+                {daVeto?.decision === "SELL" ? "VETO" : "PASS"}
+              </span>
             </div>
-            <div className="space-y-0.5">
-              <InfraRow icon={Database} label="PostgreSQL" status="OK" ok={true} />
-              <InfraRow icon={Zap}      label="Redis"     status="OK" ok={true} />
+            <div className="p-4">
+              <div className="grid grid-cols-2 gap-2 text-xs mb-3">
+                {activeAgents.map(a => {
+                  const warn = (a.warnings || []).length > 0;
+                  return (
+                    <div key={a.name} className="flex justify-between p-2 bg-neutral-800/50 rounded">
+                      <span className="text-neutral-500">{(AGENT_META[a.name]?.label || a.name).split(" ")[0]}</span>
+                      <span className={warn ? "text-amber-400 font-bold" : `${signalCls(a.decision)} font-bold`}>
+                        {warn ? "WARN" : (a.decision || "—")}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="text-[10px] text-neutral-500 border-t border-neutral-800 pt-3">
+                {daVeto
+                  ? <><span className="text-neutral-400">DA reasoning: </span><span className="text-white">{daVeto.reasoning?.slice(0, 120)}</span></>
+                  : <span>Veto threshold: ≥85% SELL. Current conviction: <span className="text-white font-bold">{confidence.toFixed(1)}%</span></span>
+                }
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Col 2 (5): Detailed Agent Cards ── */}
+        <div className="lg:col-span-5 flex flex-col gap-4">
+          <div className="flex items-center gap-2">
+            <Cpu className="h-5 w-5 text-neutral-400" />
+            <h2 className="text-base font-bold text-white tracking-tight">
+              Active Agents ({activeAgents.length}/4)
+            </h2>
+          </div>
+
+          {activeAgents.length > 0
+            ? activeAgents.map(a => <AgentCard key={a.name} agent={a} />)
+            : Object.keys(AGENT_META).map(name => (
+                <div key={name} className="bg-neutral-900 border border-neutral-800 p-4 rounded-xl opacity-40">
+                  <div className="flex items-center gap-3">
+                    {React.createElement(AGENT_META[name].icon, { className: "h-5 w-5 text-neutral-500" })}
+                    <span className="text-sm text-neutral-500">{AGENT_META[name].label}</span>
+                    <span className="text-[10px] text-neutral-600 ml-auto">waiting…</span>
+                  </div>
+                </div>
+              ))
+          }
+        </div>
+
+        {/* ── Col 3 (3): Infrastructure + Terminal ── */}
+        <div className="lg:col-span-3 flex flex-col gap-5">
+
+          {/* Infrastructure */}
+          <div className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden">
+            <div className="p-4 border-b border-neutral-800 flex justify-between items-center">
+              <h2 className="text-sm font-bold text-neutral-300 uppercase">Infrastructure</h2>
+              <Server className="h-4 w-4 text-neutral-500" />
+            </div>
+            <div className="p-4 flex flex-col gap-1">
+              <InfraRow icon={Database} label="PostgreSQL 15"     status="OK"     ok={true} />
+              <InfraRow icon={Zap}      label="Redis Cache"       status="OK"     ok={true} />
               <InfraRow icon={Globe}    label="Cloudflare Tunnel" status="SECURE" ok={true} />
-              <InfraRow icon={Lock}     label="API Gateway" status={apiOk ? "OK" : "DOWN"} ok={apiOk} />
-            </div>
-            <div className="mt-3 space-y-1.5">
-              <div className="flex justify-between text-[10px]">
-                <span className="text-neutral-600">RAM</span>
-                <span className="text-neutral-400">{sys.ram_used_gb?.toFixed(1)}/{sys.ram_total_gb?.toFixed(1)} GB</span>
+              <InfraRow icon={Lock}     label="API Gateway"       status={apiOk ? "OK" : "DOWN"} ok={apiOk} />
+
+              <div className="mt-3 pt-3 border-t border-neutral-800 space-y-2">
+                <div className="flex justify-between text-[10px]">
+                  <span className="text-neutral-600 uppercase">MacBook M1 RAM</span>
+                  <span className="text-neutral-400">{sys.ram_used_gb?.toFixed(1)} / {sys.ram_total_gb?.toFixed(1)} GB</span>
+                </div>
+                <Bar pct={sys.ram_pct} color={sys.ram_pct > 85 ? "bg-rose-500" : "bg-blue-500"} />
+                <div className="flex justify-between text-[10px]">
+                  <span className="text-neutral-600 uppercase">CPU</span>
+                  <span className="text-neutral-400">{sys.cpu_pct?.toFixed(0) || 0}%</span>
+                </div>
+                <Bar pct={sys.cpu_pct || 0} color={sys.cpu_pct > 80 ? "bg-amber-500" : "bg-emerald-500"} />
+                <div className="flex justify-between text-[10px]">
+                  <span className="text-neutral-600 uppercase">Disk</span>
+                  <span className="text-neutral-400">{sys.disk_pct?.toFixed(0) || 0}%</span>
+                </div>
+                <Bar pct={sys.disk_pct || 0} color="bg-neutral-500" />
               </div>
-              <Bar pct={sys.ram_pct} color={sys.ram_pct > 85 ? "bg-rose-500" : "bg-blue-500"} />
-              <div className="flex justify-between text-[10px]">
-                <span className="text-neutral-600">CPU</span>
-                <span className="text-neutral-400">{sys.cpu_pct?.toFixed(0)}%</span>
-              </div>
-              <Bar pct={sys.cpu_pct} color={sys.cpu_pct > 80 ? "bg-amber-500" : "bg-emerald-500"} />
             </div>
           </div>
 
-          {/* Live terminal */}
-          <div className="flex-1 flex flex-col p-5">
-            <div className="flex items-center gap-2 mb-2">
-              <Terminal className="h-3.5 w-3.5 text-neutral-600" />
-              <span className="text-[11px] font-bold text-neutral-500 uppercase">Event Log</span>
+          {/* Live Terminal */}
+          <div className="bg-neutral-950 border border-neutral-800 rounded-xl flex flex-col overflow-hidden flex-grow" style={{ minHeight: 200 }}>
+            <div className="p-3 border-b border-neutral-800 flex items-center gap-2 bg-neutral-900">
+              <Terminal className="h-4 w-4 text-neutral-500" />
+              <h2 className="text-xs font-bold text-neutral-400 uppercase">Live Output</h2>
             </div>
-            <div className="flex-1 overflow-y-auto space-y-0.5 min-h-0">
+            <div className="p-3 text-[10px] text-neutral-500 font-mono overflow-y-auto space-y-1 flex-grow">
               {events.length === 0
-                ? <p className="text-[10px] text-neutral-700">Waiting for events…</p>
-                : events.map((e, i) => (
-                  <p key={i} className="text-[10px] leading-relaxed">
+                ? <p className="text-neutral-700">Waiting for events…</p>
+                : events.slice(0, 40).map((e, i) => (
+                  <p key={i}>
                     <span className="text-neutral-700">{e.ts} </span>
-                    <span className={tagColor(e.tag)}>[{e.tag.slice(0,12)}]</span>{" "}
+                    <span className={tagColor(e.tag)}>[{e.tag.toUpperCase().slice(0, 12)}]</span>{" "}
                     <span className="text-neutral-400">{e.msg}</span>
                   </p>
                 ))
@@ -643,19 +729,26 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── Open Positions ── */}
+      {/* ── Open Positions (full width footer) ── */}
       <div className="border-t border-neutral-800 bg-neutral-900/40">
-        <div className="px-5 py-3 flex items-center justify-between">
+        <div className="px-5 py-3 flex justify-between items-center">
           <div className="flex items-center gap-2">
             <TrendingUp className="h-3.5 w-3.5 text-neutral-500" />
             <span className="text-[11px] font-bold text-neutral-400 uppercase">Open Positions</span>
             <span className="text-neutral-700 text-[10px]">{Object.keys(portfolio.positions).length} active</span>
           </div>
+          <div className="flex items-center gap-4 text-[10px] text-neutral-500">
+            <span>Equity: <span className="text-white font-bold">{fmtMoney(portfolio.equity, portfolio.currency)}</span></span>
+            <span>Cash: <span className="text-emerald-400 font-bold">{fmtMoney(portfolio.cash, portfolio.currency)}</span></span>
+            <span className={portfolio.pnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
+              Daily P&L: {portfolio.pnl >= 0 ? "+" : ""}{portfolio.pnl.toFixed(2)}%
+            </span>
+          </div>
         </div>
         {Object.keys(portfolio.positions).length === 0 ? (
           <div className="px-5 pb-4 text-[11px] text-neutral-700 flex items-center gap-2">
             <Minus className="h-3 w-3" />
-            No open positions — enable AUTO_EXECUTE_SIGNALS or place manual orders via Dhan
+            No open positions — executed signals will appear here
           </div>
         ) : (
           <div className="overflow-x-auto px-5 pb-4">
@@ -664,22 +757,33 @@ export default function App() {
                 <tr className="text-neutral-600 border-b border-neutral-800">
                   <th className="text-left py-1.5 pr-4">Symbol</th>
                   <th className="text-right pr-4">Qty</th>
-                  <th className="text-right pr-4">Avg</th>
+                  <th className="text-right pr-4">Avg Price</th>
                   <th className="text-right pr-4">Value</th>
                   <th className="text-right">Side</th>
                 </tr>
               </thead>
               <tbody>
                 {Object.entries(portfolio.positions).map(([sym, pos]) => (
-                  <tr key={sym} className="border-b border-neutral-800/40 hover:bg-neutral-800/20 cursor-pointer"
-                    onClick={() => setSelected({ symbol: sym, data_source: "" })}>
+                  <tr
+                    key={sym}
+                    className="border-b border-neutral-800/40 hover:bg-neutral-800/20 cursor-pointer"
+                    onClick={() => setSelected({ symbol: sym, data_source: "" })}
+                  >
                     <td className="py-2 pr-4 text-white font-bold">{sym}</td>
                     <td className="pr-4 text-right text-neutral-300">{pos.qty ?? "—"}</td>
-                    <td className="pr-4 text-right text-neutral-400">{pos.avg_price ? fmtMoney(pos.avg_price, portfolio.currency) : "—"}</td>
-                    <td className="pr-4 text-right text-white">{pos.value ? fmtMoney(pos.value, portfolio.currency) : "—"}</td>
+                    <td className="pr-4 text-right text-neutral-400">
+                      {pos.avg_price ? fmtMoney(pos.avg_price, portfolio.currency) : "—"}
+                    </td>
+                    <td className="pr-4 text-right text-white">
+                      {pos.value ? fmtMoney(pos.value, portfolio.currency) : "—"}
+                    </td>
                     <td className="text-right">
-                      <span className={`px-1.5 py-0.5 rounded text-[9px] ${(pos.side||"buy")==="buy" ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"}`}>
-                        {(pos.side||"BUY").toUpperCase()}
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] ${
+                        (pos.side || "buy") === "buy"
+                          ? "bg-emerald-500/20 text-emerald-400"
+                          : "bg-rose-500/20 text-rose-400"
+                      }`}>
+                        {(pos.side || "BUY").toUpperCase()}
                       </span>
                     </td>
                   </tr>
