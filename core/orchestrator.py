@@ -305,7 +305,8 @@ class Orchestrator:
                 decisions=list(agent_decisions),
                 da_decision=da_decision,
                 hypothesis=hypothesis,
-                event_bus=self._bus
+                event_bus=self._bus,
+                dynamic_weights=self._weights.get_weights() if self._weights else None
             )
             self._last_signal = signal
             

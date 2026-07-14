@@ -127,7 +127,10 @@ class RiskEngine:
         # For whole-share markets (NSE/BSE), the minimum order is 1 share.
         # If the approved position budget can't buy even 1 share, scale up to
         # 1 share — but only if 1 share ≤ 40% of available cash.
-        if current_price > 0 and position_usd < current_price:
+        # Determine if the asset is an equity (which typically requires whole shares)
+        # We assume assets with '/' or containing 'USD'/'USDT' are crypto/forex pairs
+        is_fractional_asset = "/" in signal.asset or "USD" in signal.asset.upper()
+        if not is_fractional_asset and current_price > 0 and position_usd < current_price:
             one_share_pct = current_price / portfolio.equity if portfolio.equity > 0 else 1.0
             if one_share_pct > 0.40:
                 return RiskCheckResult(

@@ -17,6 +17,11 @@ from config.settings import settings
 settings.api_auth_token = "test-secret"
 settings.enable_live_suggestions = False
 settings.database_url = "postgresql+asyncpg://nouser:nopass@localhost:1/nodb"
+settings.dhan_client_id = ""
+settings.dhan_access_token = ""
+settings.alpaca_api_key = ""
+settings.environment = "development"
+
 
 from api.main import app, state, _build_broker  # noqa: E402  (must follow the settings overrides above)
 from core.execution.broker_interface import PaperBroker
@@ -120,12 +125,15 @@ def test_cors_allows_configured_origin_only():
 
 
 def test_build_broker_falls_back_to_paper_broker_without_alpaca_key():
-    original = settings.alpaca_api_key
+    original_alpaca = settings.alpaca_api_key
+    original_dhan = settings.dhan_client_id
     settings.alpaca_api_key = ""
+    settings.dhan_client_id = ""
     try:
         assert isinstance(_build_broker(), PaperBroker)
     finally:
-        settings.alpaca_api_key = original
+        settings.alpaca_api_key = original_alpaca
+        settings.dhan_client_id = original_dhan
 
 
 def test_build_broker_falls_back_to_paper_broker_when_alpaca_construction_fails():
@@ -137,10 +145,13 @@ def test_build_broker_falls_back_to_paper_broker_when_alpaca_construction_fails(
     # runs this test.
     from unittest.mock import patch
     original_key = settings.alpaca_api_key
+    original_dhan = settings.dhan_client_id
     settings.alpaca_api_key = "PKREALLOOKINGKEY123"
+    settings.dhan_client_id = ""
     try:
         with patch("core.execution.broker_interface._ALPACA_AVAILABLE", False):
             broker = _build_broker()
         assert isinstance(broker, PaperBroker)
     finally:
         settings.alpaca_api_key = original_key
+        settings.dhan_client_id = original_dhan
