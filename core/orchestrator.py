@@ -474,7 +474,7 @@ class Orchestrator:
             await self._bus.publish("FinalCall", request_id, signal.to_dict())
 
             persistence_tasks = [
-                self._alerts.signal_generated(signal, risk_result),
+                self._alerts.signal_generated(signal, risk_result, price),
                 self._journal.log_signal(signal, price),
             ]
             if self._repository is not None:
