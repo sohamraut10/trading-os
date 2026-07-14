@@ -84,8 +84,16 @@ class ConsensusEngine:
         da_decision: AgentDecision | None = None,
         hypothesis: Optional[Any] = None,
         event_bus: Optional[Any] = None,
+        dynamic_weights: Optional[Dict[str, float]] = None,
     ) -> TradeSignal:
         
+        if dynamic_weights:
+            for k, v in dynamic_weights.items():
+                try:
+                    self._weight_map[AgentName(k)] = v
+                except ValueError:
+                    pass
+
         # Save screening confidences to calculate delta later
         screening_confidences = {d.agent_name: d.confidence for d in decisions}
 

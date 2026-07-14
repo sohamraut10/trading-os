@@ -56,7 +56,9 @@ def _build_broker():
                 access_token=settings.dhan_access_token,
                 default_exchange=settings.dhan_default_exchange,
             )
-        except Exception:
+        except Exception as e:
+            if settings.environment == "production":
+                raise RuntimeError("Failed to initialize DhanBroker in production") from e
             log.exception("Failed to initialize DhanBroker — falling back to Alpaca/PaperBroker")
 
     alpaca_configured = (
@@ -70,7 +72,9 @@ def _build_broker():
                 secret_key=settings.alpaca_secret_key,
                 base_url=settings.alpaca_base_url,
             )
-        except Exception:
+        except Exception as e:
+            if settings.environment == "production":
+                raise RuntimeError("Failed to initialize AlpacaBroker in production") from e
             log.exception("Failed to initialize AlpacaBroker — falling back to PaperBroker")
     return PaperBroker()
 
