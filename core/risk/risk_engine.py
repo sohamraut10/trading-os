@@ -6,6 +6,7 @@ import math
 from config.settings import settings
 from core.agents.meta_agent import TradeSignal
 from core.agents.base_agent import Signal
+from core.data.instruments import INDEX_UNDERLYINGS as _INDEX_UNDERLYINGS
 
 
 class RiskStatus(str, Enum):
@@ -141,7 +142,6 @@ class RiskEngine:
         #   - Index instruments (NIFTY/BANKNIFTY etc.) — never bought as shares,
         #     always traded via options or futures lots priced off premium, not spot
         #   - Options trade mode — actual cost is premium × lots, not the underlying price
-        _INDEX_UNDERLYINGS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY", "SENSEX"}
         is_fractional_asset = (
             "/" in signal.asset or "USD" in signal.asset.upper()
             or signal.asset.upper() in _INDEX_UNDERLYINGS

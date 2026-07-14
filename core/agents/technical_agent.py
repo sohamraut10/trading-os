@@ -6,6 +6,7 @@ Pure math — no external API calls, sub-millisecond.
 import numpy as np
 from dataclasses import dataclass
 from .base_agent import BaseAgent, AgentDecision, AgentName, MarketContext, Signal, OHLCV
+from core.data.instruments import INDEX_UNDERLYINGS
 
 
 @dataclass
@@ -123,7 +124,7 @@ def compute_indicators(candles: list[OHLCV]) -> TechnicalIndicators:
     )
 
 
-_INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY", "SENSEX"}
+_INDEX_SYMBOLS = INDEX_UNDERLYINGS
 
 
 def _score(ind: TechnicalIndicators, price: float, is_index: bool = False) -> tuple[Signal, float, list[str]]:

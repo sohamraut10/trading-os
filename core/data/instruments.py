@@ -37,6 +37,12 @@ log = logging.getLogger(__name__)
 _SCRIP_MASTER_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
 _REFRESH_INTERVAL = 86_400  # 24 h — refresh once per day
 
+# Canonical set of F&O index underlyings — single source of truth used across the system.
+# Import this instead of defining local copies in each module.
+INDEX_UNDERLYINGS: frozenset[str] = frozenset({
+    "NIFTY", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY", "SENSEX",
+})
+
 # Stable index security IDs — these never change so we don't need the CSV for them
 _INDEX_META: dict[str, tuple[str, str]] = {
     "NIFTY":      ("13",  "Nifty 50"),
@@ -45,6 +51,7 @@ _INDEX_META: dict[str, tuple[str, str]] = {
     "FINNIFTY":   ("27",  "Fin Nifty"),
     "NIFTYNXT50": ("26",  "Nifty Next 50"),
     "MIDCPNIFTY": ("442", "Midcap Nifty"),
+    "SENSEX":     ("51",  "BSE Sensex"),
 }
 
 

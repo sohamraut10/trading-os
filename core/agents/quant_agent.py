@@ -7,6 +7,7 @@ import numpy as np
 from dataclasses import dataclass
 from scipy import stats
 from .base_agent import BaseAgent, AgentDecision, AgentName, MarketContext, Signal, OHLCV
+from core.data.instruments import INDEX_UNDERLYINGS
 
 
 @dataclass
@@ -146,7 +147,7 @@ def compute_quant_metrics(candles: list[OHLCV]) -> QuantMetrics:
     )
 
 
-_INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY", "SENSEX"}
+_INDEX_SYMBOLS = INDEX_UNDERLYINGS
 
 
 def _quant_signal(m: QuantMetrics, is_index: bool = False, iv_rank: float = -1.0) -> tuple[Signal, float, str]:

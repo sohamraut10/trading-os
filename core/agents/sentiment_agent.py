@@ -11,6 +11,7 @@ policy, FII flows, GDP/PMI data, and crude oil — not company-level news.
 import re
 from .base_agent import BaseAgent, AgentDecision, AgentName, MarketContext, Signal
 from core.llm import build_llm_client
+from core.data.instruments import INDEX_UNDERLYINGS
 
 
 SYSTEM_PROMPT = """You are a financial sentiment analyst. Analyze the provided news headlines and
@@ -74,7 +75,7 @@ Indian macro signal rules (apply with highest weight):
 - HOLD when PCR is in neutral range (0.9–1.1) and no strong directional news
 """
 
-_INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY", "SENSEX"}
+_INDEX_SYMBOLS = INDEX_UNDERLYINGS
 
 _INDEX_CONTEXT = {
     "NIFTY": (
