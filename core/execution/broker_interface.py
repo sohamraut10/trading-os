@@ -647,6 +647,11 @@ class SmartOrderRouter:
                 )
                 entry = await self._broker.submit_order(fallback)
 
+        # After market fallback, submit_order() returns an Order with filled_qty=0
+        # and avg_fill_price=0 because Dhan only confirms orderId on submission.
+        # Fall back to the saved quantity and use the signal's current_price so
+        # SL/TP cover the full position, not Dhan's minimum lot of 1.
+        _fill_qty = entry.filled_qty if entry.filled_qty > 0 else _saved_qty
         fill_price = entry.avg_fill_price or current_price
 
         # Stop loss — mandatory. If it fails we close the position immediately
@@ -665,7 +670,7 @@ class SmartOrderRouter:
         sl = Order(
             asset=signal.asset,
             side=sl_side,
-            quantity=entry.filled_qty,
+            quantity=_fill_qty,
             order_type=sl_order_type,
             stop_price=risk.stop_loss_price,
             limit_price=sl_limit,
@@ -675,7 +680,7 @@ class SmartOrderRouter:
         if sl.status == OrderStatus.REJECTED:
             log.error("SL order rejected for %s — closing position to avoid naked exposure", signal.asset)
             try:
-                close = Order(asset=signal.asset, side=sl_side, quantity=entry.filled_qty, order_type=OrderType.MARKET)
+                close = Order(asset=signal.asset, side=sl_side, quantity=_fill_qty, order_type=OrderType.MARKET)
                 await self._broker.submit_order(close)
             except Exception as close_err:
                 log.error("Emergency close also failed for %s: %s", signal.asset, close_err)
@@ -698,7 +703,7 @@ class SmartOrderRouter:
         tp = Order(
             asset=signal.asset,
             side=sl_side,
-            quantity=entry.filled_qty,
+            quantity=_fill_qty,
             order_type=OrderType.LIMIT,
             limit_price=tp_price,
             metadata={"type": "take_profit", "parent": entry.id},
