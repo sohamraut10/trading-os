@@ -96,31 +96,40 @@ class AlertRouter:
         self,
         signal: TradeSignal,
         risk: "RiskCheckResult | None" = None,
+        price: float = 0.0,
     ) -> None:
         if signal.final_decision:
             # Suppress Telegram if market is closed OR if capital is insufficient.
-            # Agents may reach consensus on a signal the risk engine then rejects
-            # (e.g. not enough free cash for even 1 lot) — no point alerting on
-            # a trade that will not be placed.
             capital_ok = risk is None or risk.status in (RiskStatus.APPROVED, RiskStatus.SCALED_DOWN)
-            risk_body = ""
-            if risk is not None:
-                if risk.status == RiskStatus.REJECTED:
-                    risk_body = f"\n⚠️ Risk: REJECTED — {'; '.join(risk.rejection_reasons)}"
-                elif risk.status == RiskStatus.SCALED_DOWN:
-                    risk_body = f"\n📉 Size scaled to ₹{risk.approved_position_size_usd:.0f} ({risk.approved_position_size_pct*100:.1f}%)"
-                else:
-                    risk_body = f"\n✅ Size: ₹{risk.approved_position_size_usd:.0f} ({risk.approved_position_size_pct*100:.1f}%)"
+
+            # Build a rich, actionable alert body.
+            action = signal.action.value if signal.action else ""
+            lines: list[str] = [f"Confidence: {signal.confidence:.0f}%"]
+
+            if price > 0:
+                lines.append(f"Entry: ~₹{price:,.2f}")
+
+            if risk is not None and risk.status != RiskStatus.REJECTED:
+                lines.append(f"Capital required: ₹{risk.approved_position_size_usd:,.0f} ({risk.approved_position_size_pct*100:.1f}% of equity)")
+                if risk.stop_loss_price > 0 and price > 0:
+                    sl_pct = abs(risk.stop_loss_price - price) / price * 100
+                    lines.append(f"SL: ₹{risk.stop_loss_price:,.2f} ({sl_pct:.1f}% away)")
+                if risk.take_profit_price > 0 and price > 0:
+                    tp_pct = abs(risk.take_profit_price - price) / price * 100
+                    lines.append(f"TP: ₹{risk.take_profit_price:,.2f} ({tp_pct:.1f}% away)")
+                if risk.status == RiskStatus.SCALED_DOWN:
+                    lines.append("⚠️ Size scaled down by risk engine")
+
+            lines.append(f"Regime: {signal.regime}")
+            lines.append(f"Reason: {signal.reason[:200]}")
+
+            if risk is not None and risk.status == RiskStatus.REJECTED:
+                lines.append(f"❌ REJECTED: {'; '.join(risk.rejection_reasons)}")
 
             alert = Alert(
                 level="info",
-                title=f"TRUE SIGNAL — {signal.asset} {signal.action.value if signal.action else ''}",
-                body=(
-                    f"Confidence: {signal.confidence:.0f}%\n"
-                    f"Regime: {signal.regime}\n"
-                    f"Reason: {signal.reason[:200]}"
-                    f"{risk_body}"
-                ),
+                title=f"{'🟢' if action == 'BUY' else '🔴'} {signal.asset} — {action}",
+                body="\n".join(lines),
                 asset=signal.asset,
                 trade_id=signal.request_id,
             )
