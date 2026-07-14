@@ -121,13 +121,28 @@ class OptionsRouter:
         cost_per_lot = premium * lot_size
         if cost_per_lot <= 0:
             raise RuntimeError(f"Zero premium for {underlying} {strike} {'CE' if is_call else 'PE'}")
+
         if cost_per_lot > risk.approved_position_size_usd:
-            raise RuntimeError(
-                f"Minimum lot cost ₹{cost_per_lot:.0f} (1 lot × {lot_size} × ₹{premium:.2f}) "
-                f"exceeds risk budget ₹{risk.approved_position_size_usd:.0f} — "
-                f"portfolio allocation too small for {underlying} options at current confidence"
+            # Kelly budget is below 1-lot minimum. Infer total equity and check
+            # if 1 lot is still safe (same 40% cap as equity Gate 3b in risk engine).
+            implied_equity = (
+                risk.approved_position_size_usd / risk.approved_position_size_pct
+                if risk.approved_position_size_pct > 0 else 0.0
             )
-        num_lots = max(1, int(risk.approved_position_size_usd / cost_per_lot))
+            lot_pct_equity = cost_per_lot / implied_equity if implied_equity > 0 else 1.0
+            if lot_pct_equity > 0.40:
+                raise RuntimeError(
+                    f"Minimum lot cost ₹{cost_per_lot:.0f} ({lot_pct_equity:.0%} of equity) "
+                    f"exceeds 40% safety cap — skipping {underlying}"
+                )
+            log.warning(
+                "OPTIONS raised to 1-lot minimum: %s ₹%.0f (%.1f%% of equity, kelly budget was ₹%.0f)",
+                underlying, cost_per_lot, lot_pct_equity * 100, risk.approved_position_size_usd,
+            )
+            num_lots = 1
+        else:
+            num_lots = max(1, int(risk.approved_position_size_usd / cost_per_lot))
+
         qty = num_lots * lot_size
 
         log.info(

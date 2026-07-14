@@ -62,6 +62,19 @@ class PositionMonitor:
         positions = await self._broker.get_positions()
         self._portfolio.open_trades = len(positions)
 
+        # Sync portfolio.positions and cash from broker so the risk engine sees
+        # current exposure — prevents over-allocation when in-memory state drifts.
+        total_pos_value = 0.0
+        synced_positions: dict[str, float] = {}
+        for sym, pos in positions.items():
+            qty = float(pos.get("qty", 0))
+            avg = float(pos.get("avg_price", 0))
+            val = float(pos.get("value", 0)) or (abs(qty) * avg)
+            synced_positions[sym] = val
+            total_pos_value += val
+        self._portfolio.positions = synced_positions
+        self._portfolio.cash = max(0.0, self._portfolio.equity - total_pos_value)
+
         if not positions:
             return
 
