@@ -621,18 +621,31 @@ class SmartOrderRouter:
             raise RuntimeError(f"Entry order rejected: {entry.metadata.get('error', 'unknown')}")
 
         # Wait for fill or timeout → fallback to market
+        # Save side/qty before the polling loop because get_order_status() returns
+        # a fresh Order with side="" and quantity=0 — if we use that object for the
+        # MARKET resubmit, every BUY limit timeout silently becomes a SELL market.
+        _saved_side = entry.side
+        _saved_qty = entry.quantity
+        _saved_meta = dict(entry.metadata)
         if entry.status == OrderStatus.SUBMITTED:
             deadline = time.time() + self._timeout
             while time.time() < deadline:
                 await asyncio.sleep(2)
-                entry = await self._broker.get_order_status(entry.broker_order_id)
-                if entry.status == OrderStatus.FILLED:
+                poll = await self._broker.get_order_status(entry.broker_order_id)
+                if poll.status == OrderStatus.FILLED:
+                    entry = poll
                     break
             else:
-                # Cancel and resubmit as market
+                # Timeout — cancel LIMIT and resubmit as MARKET with original side/qty
                 await self._broker.cancel_order(entry.broker_order_id)
-                entry.order_type = OrderType.MARKET
-                entry = await self._broker.submit_order(entry)
+                fallback = Order(
+                    asset=entry.asset,
+                    side=_saved_side,
+                    quantity=_saved_qty,
+                    order_type=OrderType.MARKET,
+                    metadata=_saved_meta,
+                )
+                entry = await self._broker.submit_order(fallback)
 
         fill_price = entry.avg_fill_price or current_price
 
@@ -669,12 +682,25 @@ class SmartOrderRouter:
             raise RuntimeError(f"Stop-loss order rejected for {signal.asset} — position closed")
 
         # Take profit order (best-effort, not mandatory)
+        # MCX has a ±5% price-check band ("rate not within chk limit"); cap TP to 4.8%
+        # from fill so the limit order isn't rejected before it can rest on the book.
+        tp_price = risk.take_profit_price
+        try:
+            _, tp_exchange, _ = self._broker._resolve_instrument(signal.asset)
+            if tp_exchange == "MCX_COMM":
+                if sl_side == "sell":   # long trade → TP is a sell above entry
+                    tp_price = min(tp_price, fill_price * 1.048)
+                else:                   # short trade → TP is a buy below entry
+                    tp_price = max(tp_price, fill_price * 0.952)
+        except Exception:
+            pass  # if resolution fails, use original TP price
+
         tp = Order(
             asset=signal.asset,
             side=sl_side,
             quantity=entry.filled_qty,
             order_type=OrderType.LIMIT,
-            limit_price=risk.take_profit_price,
+            limit_price=tp_price,
             metadata={"type": "take_profit", "parent": entry.id},
         )
         tp = await self._broker.submit_order(tp)
