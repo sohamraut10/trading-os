@@ -5,9 +5,32 @@ daily P&L milestone.
 """
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
 from typing import Literal
 
 from core.agents.meta_agent import TradeSignal
+
+_MCX_PREFIXES = (
+    "GOLD", "SILVER", "CRUDEOIL", "NATURALGAS", "NATGAS", "COPPER",
+    "ZINC", "LEAD", "NICKEL", "ALUMINIUM", "MENTHAOIL", "KAPAS",
+    "COTTON", "CARDAMOM", "STEELREBAR",
+)
+
+def _ist_now() -> datetime:
+    return datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5, minutes=30)))
+
+def _is_market_live(asset: str) -> bool:
+    """Return True only if the exchange for this asset is currently open (IST)."""
+    now = _ist_now()
+    if now.weekday() >= 5:   # Saturday / Sunday
+        return False
+    t = now.time()
+    up = asset.upper()
+    is_mcx = any(up.startswith(p) for p in _MCX_PREFIXES)
+    from datetime import time as _t
+    if is_mcx:
+        return _t(9, 0) <= t <= _t(23, 30)
+    return _t(9, 15) <= t <= _t(15, 30)
 
 
 AlertLevel = Literal["info", "warning", "critical"]
@@ -81,8 +104,15 @@ class AlertRouter:
                 asset=signal.asset,
                 trade_id=signal.request_id,
             )
-            # TRUE signals go to all channels including Telegram
-            await self._broadcast(alert)
+            if _is_market_live(signal.asset):
+                # Market open — fire all channels including Telegram
+                await self._broadcast(alert)
+            else:
+                # Market closed — console only, suppress Telegram
+                await asyncio.gather(
+                    *[a.send(alert) for a in self._alerters if isinstance(a, ConsoleAlerter)],
+                    return_exceptions=True,
+                )
         else:
             # FALSE signals only go to console — Telegram stays quiet
             await asyncio.gather(
