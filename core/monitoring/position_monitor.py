@@ -187,9 +187,13 @@ class PositionMonitor:
 
             # CNC equity requires STOP_LOSS (limit type) with price < trigger.
             # MCX INTRADAY futures work with STOP_LOSS_MARKET (no limit price needed).
+            # NSE equity tick = ₹0.05; MCX varies but MCX uses SLM (no price needed).
+            _tick = 0.05
+            sl_price_ticked = round(round(sl_price / _tick) * _tick, 10)
             if itype == "EQUITY":
                 order_type = OrderType.STOP_LIMIT
-                limit_price = round(sl_price * 0.995, 2)   # 0.5% buffer below trigger
+                lp_raw = sl_price * 0.995   # 0.5% buffer below trigger
+                limit_price = round(round(lp_raw / _tick) * _tick, 10)
             else:
                 order_type = OrderType.STOP
                 limit_price = None
@@ -199,7 +203,7 @@ class PositionMonitor:
                 side=sl_side,
                 quantity=abs(qty),
                 order_type=order_type,
-                stop_price=round(sl_price, 2),
+                stop_price=sl_price_ticked,
                 limit_price=limit_price,
                 metadata={
                     "type": "stop_loss",

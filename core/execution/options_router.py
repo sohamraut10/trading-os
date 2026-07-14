@@ -33,6 +33,14 @@ log = logging.getLogger(__name__)
 # Index underlyings → weekly expiry preferred; stocks → monthly
 _INDEX_UNDERLYINGS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY", "SENSEX"}
 
+# NSE_FNO tick size is ₹0.05 for all options.
+_FNO_TICK = 0.05
+
+
+def _tick_round(price: float, tick: float = _FNO_TICK) -> float:
+    """Round price to nearest tick to satisfy exchange validation."""
+    return round(round(price / tick) * tick, 10)
+
 
 class OptionsRouter:
     """
@@ -161,7 +169,7 @@ class OptionsRouter:
             side="buy",
             quantity=qty,
             order_type=OrderType.LIMIT,
-            limit_price=round(premium * 1.002, 2),   # tiny edge above LTP
+            limit_price=_tick_round(premium * 1.002),   # tiny edge above LTP
             metadata={
                 "security_id": str(option_sid),
                 "exchange": opt_exchange,
@@ -183,7 +191,7 @@ class OptionsRouter:
         # Dynamic SL: tighter for short-dated options where theta eats 20-40%/day.
         # Floor of 25% allows intraday moves; scales up to self._sl_pct for 5+ DTE.
         dynamic_sl_pct = min(self._sl_pct, 0.25 + 0.05 * days_to_expiry)
-        sl_trigger = round(fill_premium * (1 - dynamic_sl_pct), 2)
+        sl_trigger = _tick_round(fill_premium * (1 - dynamic_sl_pct))
         log.info("SL calc — DTE=%d, sl_pct=%.0f%% (dynamic), trigger=₹%.2f", days_to_expiry, dynamic_sl_pct * 100, sl_trigger)
         sl = Order(
             asset=entry.asset,
@@ -212,7 +220,7 @@ class OptionsRouter:
         # Risk  = fill_premium × dynamic_sl_pct
         # Target = 2 × risk = fill_premium × 2 × dynamic_sl_pct
         # TP price = fill_premium + target = fill_premium × (1 + 2 × dynamic_sl_pct)
-        tp_premium = round(fill_premium * (1 + 2 * dynamic_sl_pct), 2)
+        tp_premium = _tick_round(fill_premium * (1 + 2 * dynamic_sl_pct))
         tp = Order(
             asset=entry.asset,
             side="sell",
