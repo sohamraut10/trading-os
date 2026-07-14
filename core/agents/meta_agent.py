@@ -73,6 +73,7 @@ class ConsensusEngine:
             AgentName.SENTIMENT: self.weights["sentiment"],
             AgentName.QUANT: self.weights["quant"],
             AgentName.ORDER_FLOW: self.weights["order_flow"],
+            AgentName.OPTIONS: self.weights["options"],
         }
 
     async def evaluate(

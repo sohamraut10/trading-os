@@ -20,6 +20,7 @@ from core.agents import (
     OrderFlowAgent, DevilsAdvocateAgent, ConsensusEngine,
     MarketContext,
 )
+from core.options.signal_generator import OptionsAnalysisAgent
 from core.agents.base_agent import Signal, OrderBook, OrderBookLevel
 from core.agents.meta_agent import TradeSignal
 from core.data.market_data import MarketDataProvider
@@ -134,6 +135,10 @@ class Orchestrator:
         self._quant = QuantAgent()
         self._of = OrderFlowAgent()
         self._da = DevilsAdvocateAgent()
+        self._opts = OptionsAnalysisAgent(
+            broker=getattr(router, "_broker", None),
+            market_data=data_provider,
+        )
         self._meta = ConsensusEngine()
         self._risk = RiskEngine()
         self._selector = StrategySelector()
@@ -325,6 +330,7 @@ class Orchestrator:
                 self._sent.analyze(ctx),
                 self._quant.analyze(ctx),
                 self._of.analyze(ctx),
+                self._opts.analyze(ctx),
             )
             
             # Emit ScreeningResult for each voting agent

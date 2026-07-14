@@ -4,18 +4,20 @@ from typing import Literal
 
 
 class AgentWeights(BaseModel):
-    technical: float = 0.30
+    technical: float = 0.25
     sentiment: float = 0.20
-    quant: float = 0.25
-    order_flow: float = 0.25
+    quant: float = 0.20
+    order_flow: float = 0.20
+    options: float = 0.15    # options agent — votes only on index underlyings
 
     def normalize(self) -> dict:
-        total = self.technical + self.sentiment + self.quant + self.order_flow
+        total = self.technical + self.sentiment + self.quant + self.order_flow + self.options
         return {
             "technical": self.technical / total,
             "sentiment": self.sentiment / total,
             "quant": self.quant / total,
             "order_flow": self.order_flow / total,
+            "options": self.options / total,
         }
 
 
