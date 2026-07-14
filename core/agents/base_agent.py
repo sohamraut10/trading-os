@@ -22,6 +22,7 @@ class AgentName(str, Enum):
     QUANT = "Quant"
     ORDER_FLOW = "OrderFlow"
     DEVILS_ADVOCATE = "DevilsAdvocate"
+    OPTIONS = "Options"
     META = "Meta"
 
 
