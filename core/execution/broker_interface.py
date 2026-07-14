@@ -608,7 +608,40 @@ class SmartOrderRouter:
         # Entry order — limit at current price with small edge
         edge = 0.0005 if side == "buy" else -0.0005
         entry_limit = current_price * (1 + edge)
-        qty = risk.approved_position_size_usd / current_price
+
+        # For MCX futures the Dhan API expects qty in LOTS, not individual units.
+        # 1 lot of LEAD = 5 MT; naively dividing budget by per-kg price sends
+        # e.g. 44 lots (220 MT) instead of 0, triggering DH-906 margin failures.
+        # Lookup the lot size from scrip master and size in lots; if even 1 lot
+        # exceeds 40% of equity, reject before hitting the broker.
+        lot_size = 1
+        try:
+            _, _entry_exch, _ = self._broker._resolve_instrument(signal.asset)
+            if _entry_exch == "MCX_COMM":
+                from core.data.instruments import scrip_master as _sm
+                _ls = _sm.fno_lot_size(signal.asset)
+                if _ls > 1:
+                    lot_size = _ls
+        except Exception:
+            pass
+
+        contract_value = current_price * lot_size
+        if lot_size > 1 and contract_value > 0:
+            # Size in lots; raise to 1-lot minimum, but cap at 40% equity
+            num_lots = max(1, int(risk.approved_position_size_usd / contract_value))
+            implied_equity = (
+                risk.approved_position_size_usd / risk.approved_position_size_pct
+                if risk.approved_position_size_pct > 0 else 0.0
+            )
+            one_lot_pct = contract_value / implied_equity if implied_equity > 0 else 1.0
+            if one_lot_pct > 0.40:
+                raise RuntimeError(
+                    f"1 lot {signal.asset} costs ₹{contract_value:,.0f} "
+                    f"({one_lot_pct:.0%} of equity) — exceeds 40% cap"
+                )
+            qty = num_lots * lot_size
+        else:
+            qty = risk.approved_position_size_usd / current_price
 
         entry = Order(
             asset=signal.asset,
