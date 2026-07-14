@@ -28,10 +28,9 @@ if TYPE_CHECKING:
     from core.risk.risk_engine import RiskCheckResult
     from core.execution.broker_interface import DhanBroker
 
-log = logging.getLogger(__name__)
+from core.data.instruments import INDEX_UNDERLYINGS as _INDEX_UNDERLYINGS
 
-# Index underlyings → weekly expiry preferred; stocks → monthly
-_INDEX_UNDERLYINGS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY", "SENSEX"}
+log = logging.getLogger(__name__)
 
 # NSE_FNO tick size is ₹0.05 for all options.
 _FNO_TICK = 0.05

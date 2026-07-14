@@ -5,8 +5,7 @@ from core.agents.base_agent import MarketContext, Signal, TradeHypothesis
 from core.strategy.strategy_base import BaseStrategy, StrategyType
 from core.strategy.strategies import STRATEGY_REGISTRY
 from core.agents.quant_agent import _hurst_exponent, _historical_volatility, _returns
-
-_INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY", "SENSEX"}
+from core.data.instruments import INDEX_UNDERLYINGS as _INDEX_SYMBOLS
 
 
 class StrategySelector:

@@ -6,9 +6,7 @@ Runs on every analysis cycle to inform all agents.
 """
 import numpy as np
 from core.agents.base_agent import OHLCV
-
-
-_INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY", "SENSEX"}
+from core.data.instruments import INDEX_UNDERLYINGS as _INDEX_SYMBOLS
 
 
 def detect_regime(candles: list[OHLCV], vix: float = 20.0, asset: str = "") -> str:

@@ -37,6 +37,7 @@ from core.streaming.event_bus import EventBus
 from core.strategy.selector import StrategySelector
 from core.strategy.strategies import STRATEGY_REGISTRY
 from core.persistence.repository import Repository
+from core.data.instruments import INDEX_UNDERLYINGS as _INDEX_SYMBOLS_ORCH
 
 log = logging.getLogger("trading_os.orchestrator")
 
@@ -194,7 +195,6 @@ class Orchestrator:
             #   and produce a noisy z-score; daily bars give a clean 100-day view
             #   that Quant can score at 90%+ confidence.
             # - Other assets: fall back to daily only when intraday < 60 bars.
-            _INDEX_SYMBOLS_ORCH = {"NIFTY", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY", "SENSEX"}
             _MIN_CANDLES_NEEDED = 60
             _is_index = self.asset.upper() in _INDEX_SYMBOLS_ORCH
             _needs_daily = (_is_index and self.timeframe != "1d") or \
@@ -292,7 +292,8 @@ class Orchestrator:
             vol_rank = self._compute_vol_rank(candles)
             if opts_ctx.get("atm_iv", -1) > 0 and vol_rank >= 0:
                 closes = np.array([c.close for c in candles], dtype=float)
-                rets = np.diff(closes) / closes[:-1]
+                closes = closes[closes > 0]
+                rets = np.diff(closes) / closes[:-1] if len(closes) > 1 else np.array([])
                 hv_20d = float(rets[-20:].std() * np.sqrt(252) * 100) if len(rets) >= 20 else 0.0
                 if hv_20d > 0:
                     # IV/HV ratio: 1.0 = fair, >1.5 = expensive, <0.7 = cheap
@@ -641,6 +642,9 @@ class Orchestrator:
         if len(candles) < 40:
             return -1.0
         closes = np.array([c.close for c in candles], dtype=float)
+        closes = closes[closes > 0]   # drop zero-price candles (corrupted data)
+        if len(closes) < 21:
+            return -1.0
         rets = np.diff(closes) / closes[:-1]
         if len(rets) < 20:
             return -1.0

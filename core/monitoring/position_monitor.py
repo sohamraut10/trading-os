@@ -112,8 +112,13 @@ class PositionMonitor:
             sl_pct = self._risk_cfg.max_trade_drawdown
             emergency_pct = sl_pct * EMERGENCY_DRAWDOWN_MULT
 
-            # Track entry prices so we can compute P&L on close
-            if avg_price > 0 and symbol not in self._entry_prices:
+            # Track entry prices so we can compute P&L on close.
+            # Reset on re-entry: if avg_price changed by >5% vs cached, treat as new position.
+            cached_entry = self._entry_prices.get(symbol, 0.0)
+            if avg_price > 0 and (
+                cached_entry == 0.0
+                or abs(avg_price - cached_entry) / cached_entry > 0.05
+            ):
                 self._entry_prices[symbol] = avg_price
 
             # ── Emergency close ───────────────────────────────────────────────

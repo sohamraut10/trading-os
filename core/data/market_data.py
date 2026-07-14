@@ -359,15 +359,24 @@ class DhanProvider(MarketDataProvider):
 
             raw_data = raw.get("data") if isinstance(raw, dict) else None
             data = raw_data if isinstance(raw_data, dict) else {}
-            if not data and isinstance(raw, dict) and raw.get("status") == "failure":
-                remarks = raw.get("remarks", {})
-                err_code = remarks.get("error_code", "") if isinstance(remarks, dict) else str(remarks)
-                if err_code == "DH-904" and attempt < 2:
-                    # Rate limit — back off and retry
+            if not data:
+                if isinstance(raw, dict) and raw.get("status") == "failure":
+                    remarks = raw.get("remarks", {})
+                    err_code = remarks.get("error_code", "") if isinstance(remarks, dict) else str(remarks)
+                    if err_code == "DH-904" and attempt < 2:
+                        # Rate limit — back off and retry
+                        await asyncio.sleep(2.0 * (attempt + 1))
+                        continue
+                    raise RuntimeError(f"Dhan API error: {remarks}")
+                # Silent empty response (ghost rate-limit or market closed).
+                # Return stale cache rather than caching an empty result.
+                if cached:
+                    log.warning("%s %s: empty response from Dhan — returning stale cache", symbol, timeframe)
+                    return cached[1]
+                if attempt < 2:
                     await asyncio.sleep(2.0 * (attempt + 1))
                     continue
-                raise RuntimeError(f"Dhan API error: {remarks}")
-            break  # success
+            break  # success or permanent empty
 
         opens  = data.get("open",      [])
         highs  = data.get("high",      [])

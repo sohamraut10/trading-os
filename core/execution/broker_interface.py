@@ -571,7 +571,7 @@ class DhanBroker(BrokerAdapter):
         except Exception:
             pass
 
-        security_id = pos.get("security_id") or self._resolve_security_id(symbol)
+        security_id = pos.get("security_id") or self._resolve_instrument(symbol)[0]
         exchange = pos.get("exchange", self._default_exchange)
         close_order = Order(
             asset=symbol,
