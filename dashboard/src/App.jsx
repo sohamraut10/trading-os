@@ -5,7 +5,7 @@ import {
   RefreshCw, AlertTriangle, CheckCircle, Search,
 } from 'lucide-react';
 import { createChart } from 'lightweight-charts';
-import { fetchPortfolio, fetchPairSuggestions, analyzeAsset, fetchSystem, fetchCandles } from './api';
+import { fetchPortfolio, fetchPairSuggestions, analyzeAsset, fetchSystem, fetchCandles, fetchPositions, closePosition, fetchOptionExpiries, fetchOptionChain, fetchTradeHistory } from './api';
 import { connectEvents } from './eventsPoller';
 
 // ── constants ─────────────────────────────────────────────────────────────────
@@ -346,6 +346,367 @@ function Bar({ pct, color = "bg-blue-500" }) {
   );
 }
 
+// ── Fee Calculator ────────────────────────────────────────────────────────────
+
+const FEE_PROFILES = {
+  "NSE CNC (Delivery)": {
+    brokerage: () => 0,
+    stt: (qty, price) => (qty * price * 0.001) * 2,          // 0.1% both sides
+    exchange: (qty, price) => qty * price * 0.0000297 * 2,   // 0.00297% both sides
+    stamp: (qty, price) => qty * price * 0.00015,             // 0.015% buy side
+  },
+  "NSE Intraday": {
+    brokerage: (qty, price) => Math.min(qty * price * 0.0003, 20) * 2,
+    stt: (qty, price) => qty * price * 0.00025,               // 0.025% sell side
+    exchange: (qty, price) => qty * price * 0.0000297 * 2,
+    stamp: (qty, price) => qty * price * 0.00003,             // 0.003% buy side
+  },
+  "NSE F&O Options": {
+    brokerage: (qty, price) => Math.min(qty * price * 0.0003, 20) * 2,
+    stt: (qty, price) => qty * price * 0.000625,              // 0.0625% sell side (premium)
+    exchange: (qty, price) => qty * price * 0.00053 * 2,     // 0.053% both sides
+    stamp: (qty, price) => qty * price * 0.00003,
+  },
+  "NSE F&O Futures": {
+    brokerage: (qty, price) => Math.min(qty * price * 0.0003, 20) * 2,
+    stt: (qty, price) => qty * price * 0.0000125,             // 0.00125% sell side
+    exchange: (qty, price) => qty * price * 0.00002 * 2,
+    stamp: (qty, price) => qty * price * 0.00002,
+  },
+  "MCX Commodity": {
+    brokerage: (qty, price) => Math.min(qty * price * 0.0003, 20) * 2,
+    stt: () => 0,
+    exchange: (qty, price) => qty * price * 0.000026 * 2,    // ~0.0026% both sides
+    stamp: (qty, price) => qty * price * 0.00002,
+  },
+};
+
+function calcFees(profile, qty, price) {
+  const p = FEE_PROFILES[profile];
+  if (!p || !qty || !price) return null;
+  const brok   = p.brokerage(qty, price);
+  const stt    = p.stt(qty, price);
+  const exch   = p.exchange(qty, price);
+  const stamp  = p.stamp(qty, price);
+  const sebi   = qty * price * 0.000001 * 2;
+  const gst    = (brok + exch) * 0.18;
+  const total  = brok + stt + exch + stamp + sebi + gst;
+  return { brok, stt, exch, stamp, sebi, gst, total };
+}
+
+// Per-leg fee for a single trade execution (used in trade history)
+function calcLegFee(exchange, product, optionType, side, qty, price) {
+  if (!qty || !price) return 0;
+  const tv = qty * price; // turnover for this leg
+  const isBuy  = side === "BUY";
+  const isCNC  = product === "CNC";
+  const isMCX  = exchange === "MCX_COMM";
+  const isFNO  = exchange === "NSE_FNO";
+  const isOpt  = optionType === "CALL" || optionType === "PUT";
+
+  // Brokerage per leg
+  const brok = isCNC ? 0 : Math.min(tv * 0.0003, 20);
+
+  // STT (charged on specific side)
+  let stt = 0;
+  if (isMCX) {
+    stt = 0;
+  } else if (isCNC) {
+    stt = tv * 0.001;            // 0.1% both sides
+  } else if (isFNO && isOpt) {
+    stt = isBuy ? 0 : tv * 0.000625; // 0.0625% sell side only (on premium)
+  } else if (isFNO) {
+    stt = isBuy ? 0 : tv * 0.0000125; // 0.00125% sell side futures
+  } else {
+    stt = isBuy ? 0 : tv * 0.00025;  // intraday equity 0.025% sell only
+  }
+
+  // Exchange charge per leg
+  let exch = 0;
+  if (isMCX)       exch = tv * 0.00002;
+  else if (isOpt)  exch = tv * 0.00053;
+  else if (isFNO)  exch = tv * 0.00002;
+  else              exch = tv * 0.0000297;
+
+  // Stamp duty (buy side only)
+  let stamp = 0;
+  if (isBuy) {
+    if (isMCX)       stamp = tv * 0.00002;
+    else if (isCNC)  stamp = tv * 0.00015;
+    else if (isFNO)  stamp = tv * 0.00003;
+    else              stamp = tv * 0.00003;
+  }
+
+  const sebi = tv * 0.000001;
+  const gst  = (brok + exch) * 0.18;
+  return brok + stt + exch + stamp + sebi + gst;
+}
+
+// Build P&L summary by symbol from trade history rows
+function buildTradePnL(trades) {
+  const bySymbol = {};
+  for (const t of trades) {
+    const s = t.symbol;
+    if (!bySymbol[s]) bySymbol[s] = { buyVal: 0, sellVal: 0, fees: 0, buyQty: 0, sellQty: 0 };
+    const fee = calcLegFee(t.exchange, t.product, t.option_type, t.side, t.qty, t.price);
+    bySymbol[s].fees += fee;
+    if (t.side === "BUY")  { bySymbol[s].buyVal  += t.qty * t.price; bySymbol[s].buyQty  += t.qty; }
+    if (t.side === "SELL") { bySymbol[s].sellVal += t.qty * t.price; bySymbol[s].sellQty += t.qty; }
+  }
+  return bySymbol;
+}
+
+function FeeCalculator() {
+  const [profile, setProfile]   = useState("NSE CNC (Delivery)");
+  const [qty, setQty]           = useState("");
+  const [price, setPrice]       = useState("");
+  const [open, setOpen]         = useState(false);
+
+  const fees = calcFees(profile, parseFloat(qty), parseFloat(price));
+  const turnover = parseFloat(qty) * parseFloat(price) || 0;
+
+  return (
+    <div className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full px-4 py-3 flex items-center gap-2 hover:bg-neutral-800/40 transition-colors"
+      >
+        <Zap className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
+        <span className="text-xs font-bold text-amber-400 uppercase tracking-wider">Fee Calculator</span>
+        <span className="text-[10px] text-neutral-600 ml-1">Dhan brokerage + taxes</span>
+        {fees && (
+          <span className="ml-auto text-[11px] font-bold text-white">
+            Total: <span className="text-amber-400">₹{fees.total.toFixed(2)}</span>
+          </span>
+        )}
+        <ChevronDown className={`h-3.5 w-3.5 text-neutral-500 ml-1 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="border-t border-neutral-800 p-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+            <div>
+              <label className="block text-[10px] text-neutral-600 uppercase mb-1">Segment</label>
+              <select
+                value={profile}
+                onChange={e => setProfile(e.target.value)}
+                className="w-full bg-neutral-800 border border-neutral-700 text-neutral-200 text-[11px] rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+              >
+                {Object.keys(FEE_PROFILES).map(k => <option key={k} value={k}>{k}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] text-neutral-600 uppercase mb-1">Quantity / Lots</label>
+              <input
+                type="number" min="1" value={qty} onChange={e => setQty(e.target.value)}
+                placeholder="e.g. 50"
+                className="w-full bg-neutral-800 border border-neutral-700 text-neutral-200 text-[11px] rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] text-neutral-600 uppercase mb-1">Price (₹)</label>
+              <input
+                type="number" min="0" step="0.05" value={price} onChange={e => setPrice(e.target.value)}
+                placeholder="e.g. 1200.00"
+                className="w-full bg-neutral-800 border border-neutral-700 text-neutral-200 text-[11px] rounded px-2 py-1.5 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          {fees ? (
+            <>
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 mb-3">
+                {[
+                  { label: "Brokerage", val: fees.brok, color: "text-neutral-300" },
+                  { label: "STT",       val: fees.stt,  color: "text-rose-400" },
+                  { label: "Exch. Fee", val: fees.exch, color: "text-neutral-300" },
+                  { label: "Stamp",     val: fees.stamp, color: "text-neutral-300" },
+                  { label: "SEBI",      val: fees.sebi, color: "text-neutral-300" },
+                  { label: "GST 18%",   val: fees.gst,  color: "text-amber-400/80" },
+                ].map(({ label, val, color }) => (
+                  <div key={label} className="bg-neutral-800/60 rounded p-2 text-center">
+                    <div className="text-[9px] text-neutral-600 uppercase mb-1">{label}</div>
+                    <div className={`text-[11px] font-bold ${color}`}>₹{val.toFixed(2)}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex items-center justify-between bg-neutral-800/40 rounded-lg px-4 py-2.5">
+                <div className="text-[10px] text-neutral-500">
+                  Turnover: <span className="text-neutral-300 font-bold">₹{turnover.toFixed(2)}</span>
+                  <span className="ml-3">Break-even: <span className="text-neutral-300 font-bold">₹{(fees.total / (parseFloat(qty) || 1)).toFixed(3)}/unit</span></span>
+                </div>
+                <div className="text-sm font-black">
+                  Total Fees: <span className="text-amber-400">₹{fees.total.toFixed(2)}</span>
+                  <span className="text-[10px] text-neutral-500 font-normal ml-1.5">
+                    ({turnover > 0 ? ((fees.total / turnover) * 100).toFixed(3) : "0"}% of turnover)
+                  </span>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="text-center py-3 text-[11px] text-neutral-700">Enter quantity and price to calculate fees</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Options Chain Panel ───────────────────────────────────────────────────────
+
+function fmtOI(v) {
+  if (!v || v <= 0) return "—";
+  if (v >= 1e5) return `${(v / 1e5).toFixed(1)}L`;
+  if (v >= 1e3) return `${(v / 1e3).toFixed(0)}k`;
+  return String(v);
+}
+
+function OptionsChainPanel({ symbol, expiries, expiry, onExpiry, chain, loading, signalAction }) {
+  if (!expiries.length && !chain && !loading) return null;
+
+  const spot = chain?.spot || 0;
+  const allStrikes = chain?.strikes || [];
+
+  let atmIdx = 0;
+  if (spot > 0 && allStrikes.length) {
+    let minDiff = Infinity;
+    allStrikes.forEach((s, i) => {
+      const d = Math.abs(s.strike - spot);
+      if (d < minDiff) { minDiff = d; atmIdx = i; }
+    });
+  }
+
+  const autoPickIdx = signalAction === "BUY"
+    ? atmIdx + 1
+    : signalAction === "SELL"
+    ? atmIdx - 1
+    : -1;
+
+  const lo = Math.max(0, atmIdx - 8);
+  const hi = Math.min(allStrikes.length - 1, atmIdx + 8);
+  const visible = allStrikes.slice(lo, hi + 1);
+
+  const fmtLtp = v => (v != null && v > 0) ? v.toFixed(2) : "—";
+
+  return (
+    <div className="px-5 pb-4">
+      <div className="bg-neutral-900 border border-neutral-800 rounded-xl overflow-hidden">
+        {/* header */}
+        <div className="px-4 py-3 border-b border-neutral-800 flex items-center gap-3 flex-wrap">
+          <BarChart2 className="h-3.5 w-3.5 text-blue-400 flex-shrink-0" />
+          <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">Options Chain</span>
+          <span className="text-[11px] text-neutral-500">{symbol}</span>
+          {spot > 0 && (
+            <span className="text-[11px] text-neutral-400">
+              Spot: <span className="text-white font-bold">₹{spot.toFixed(0)}</span>
+            </span>
+          )}
+          {loading && <RefreshCw className="h-3 w-3 text-neutral-600 animate-spin" />}
+          <div className="ml-auto flex gap-1.5 flex-wrap">
+            {expiries.slice(0, 6).map(exp => (
+              <button
+                key={exp}
+                onClick={() => onExpiry(exp)}
+                className={`px-2 py-0.5 text-[10px] rounded border font-mono transition-colors ${
+                  exp === expiry
+                    ? "bg-blue-500/20 border-blue-500/40 text-blue-300 font-bold"
+                    : "border-neutral-700 text-neutral-500 hover:border-neutral-600 hover:text-neutral-400"
+                }`}
+              >
+                {exp}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* table */}
+        {visible.length > 0 ? (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-[10px] font-mono">
+                <thead>
+                  <tr className="border-b border-neutral-800 bg-neutral-950/40">
+                    <th className="text-right py-2 px-2 text-emerald-700 font-medium">OI</th>
+                    <th className="text-right px-2 text-emerald-700 font-medium">IV%</th>
+                    <th className="text-right px-2 text-emerald-700 font-medium">Δ</th>
+                    <th className="text-right px-2 pr-3 text-emerald-400 font-bold">CE LTP</th>
+                    <th className="text-center px-3 text-neutral-200 font-black bg-neutral-800/50">STRIKE</th>
+                    <th className="text-left px-2 pl-3 text-rose-400 font-bold">PE LTP</th>
+                    <th className="text-left px-2 text-rose-700 font-medium">Δ</th>
+                    <th className="text-left px-2 text-rose-700 font-medium">IV%</th>
+                    <th className="text-left px-2 text-rose-700 font-medium">OI</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map((s, vi) => {
+                    const ri = lo + vi;
+                    const isAtm = ri === atmIdx;
+                    const isAuto = ri === autoPickIdx;
+                    const ce = s.ce || {};
+                    const pe = s.pe || {};
+                    const autoCE = isAuto && signalAction === "BUY";
+                    const autoPE = isAuto && signalAction === "SELL";
+                    return (
+                      <tr
+                        key={s.strike}
+                        className={`border-b transition-colors ${
+                          isAtm
+                            ? "border-blue-500/30 bg-blue-500/10"
+                            : isAuto
+                            ? `border-neutral-800/40 ${signalAction === "BUY" ? "bg-emerald-500/10" : "bg-rose-500/10"}`
+                            : "border-neutral-800/30 hover:bg-neutral-800/20"
+                        }`}
+                      >
+                        <td className="text-right py-1.5 px-2 text-emerald-800">{fmtOI(ce.oi)}</td>
+                        <td className="text-right px-2 text-emerald-800">{ce.iv ? ce.iv.toFixed(1) : "—"}</td>
+                        <td className="text-right px-2 text-emerald-700">{ce.delta ? ce.delta.toFixed(2) : "—"}</td>
+                        <td className={`text-right px-2 pr-3 font-bold ${autoCE ? "text-emerald-300" : "text-emerald-500"}`}>
+                          {fmtLtp(ce.ltp)}
+                          {autoCE && (
+                            <span className="ml-1 text-[8px] bg-emerald-500/25 text-emerald-400 px-1 rounded border border-emerald-500/30">AUTO</span>
+                          )}
+                        </td>
+                        <td className={`text-center px-3 font-black text-sm bg-neutral-800/40 ${isAtm ? "text-white" : "text-neutral-400"}`}>
+                          {s.strike}
+                          {isAtm && <span className="ml-1.5 text-[8px] text-blue-400 font-normal">ATM</span>}
+                        </td>
+                        <td className={`text-left px-2 pl-3 font-bold ${autoPE ? "text-rose-300" : "text-rose-500"}`}>
+                          {fmtLtp(pe.ltp)}
+                          {autoPE && (
+                            <span className="ml-1 text-[8px] bg-rose-500/25 text-rose-400 px-1 rounded border border-rose-500/30">AUTO</span>
+                          )}
+                        </td>
+                        <td className="text-left px-2 text-rose-700">{pe.delta ? pe.delta.toFixed(2) : "—"}</td>
+                        <td className="text-left px-2 text-rose-800">{pe.iv ? pe.iv.toFixed(1) : "—"}</td>
+                        <td className="text-left px-2 text-rose-800">{fmtOI(pe.oi)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="px-4 py-2 border-t border-neutral-800/50 flex items-center gap-4 text-[9px] text-neutral-700">
+              <span className="text-blue-500/60">■ ATM</span>
+              {signalAction && signalAction !== "HOLD" && autoPickIdx >= 0 && (
+                <span className={signalAction === "BUY" ? "text-emerald-700/80" : "text-rose-700/80"}>
+                  ■ AUTO-PICK ({signalAction === "BUY" ? "CE" : "PE"} — {signalAction === "BUY" ? "1 OTM above ATM" : "1 OTM below ATM"})
+                </span>
+              )}
+              <span className="ml-auto">showing ATM ±8 of {allStrikes.length} strikes</span>
+            </div>
+          </>
+        ) : loading ? (
+          <div className="px-4 py-8 text-center text-neutral-600 text-xs">Loading chain…</div>
+        ) : (
+          <div className="px-4 py-8 text-center text-neutral-700 text-xs">
+            {expiry ? "No chain data for this symbol / expiry" : "Select an expiry above"}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── main App ──────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -359,6 +720,16 @@ export default function App() {
   const [apiOk, setApiOk]       = useState(true);
   const [events, setEvents]     = useState([]);
   const [scanResults, setScanResults] = useState({});
+  const [positions, setPositions]   = useState({});
+  const [closingPos, setClosingPos] = useState(null);
+  const [confirmClose, setConfirmClose] = useState(null);
+  const [optExpiries, setOptExpiries]       = useState([]);
+  const [optExpiry, setOptExpiry]           = useState("");
+  const [optChain, setOptChain]             = useState(null);
+  const [optChainLoading, setOptChainLoading] = useState(false);
+  const [activeTab, setActiveTab]           = useState("positions");
+  const [tradeHistory, setTradeHistory]     = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const scanActiveRef = useRef(false);
   const watchlistRef  = useRef(DEFAULT_WATCHLIST);
 
@@ -393,6 +764,69 @@ export default function App() {
     const t = setInterval(poll, 10_000);
     return () => clearInterval(t);
   }, []);
+
+  // enriched positions (P&L + SL/TP) every 15s
+  useEffect(() => {
+    const poll = () => fetchPositions().then(setPositions).catch(() => {});
+    poll();
+    const t = setInterval(poll, 15_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const handleClosePosition = async (symbol) => {
+    setClosingPos(symbol);
+    setConfirmClose(null);
+    try {
+      await closePosition(symbol);
+      setPositions(prev => { const n = { ...prev }; delete n[symbol]; return n; });
+    } catch (e) {
+      alert(`Close failed: ${e.message}`);
+    } finally {
+      setClosingPos(null);
+    }
+  };
+
+  // options chain: fetch expiries when symbol changes
+  useEffect(() => {
+    if (!selected.symbol) return;
+    setOptExpiries([]);
+    setOptExpiry("");
+    setOptChain(null);
+    fetchOptionExpiries(selected.symbol)
+      .then(d => {
+        const list = d.expiries || [];
+        setOptExpiries(list);
+        if (list.length) setOptExpiry(list[0]);
+      })
+      .catch(() => {});
+  }, [selected.symbol]);
+
+  // options chain: fetch chain when expiry changes
+  useEffect(() => {
+    if (!optExpiry || !selected.symbol) return;
+    setOptChainLoading(true);
+    fetchOptionChain(selected.symbol, optExpiry)
+      .then(d => setOptChain(d))
+      .catch(() => setOptChain(null))
+      .finally(() => setOptChainLoading(false));
+  }, [selected.symbol, optExpiry]);
+
+  // trade history: fetch on tab switch, refresh every 2 min
+  useEffect(() => {
+    if (activeTab !== "history") return;
+    let cancelled = false;
+    const load = async () => {
+      setHistoryLoading(true);
+      try {
+        const d = await fetchTradeHistory(30);
+        if (!cancelled) setTradeHistory(d.trades || []);
+      } catch { /* silently skip */ }
+      finally { if (!cancelled) setHistoryLoading(false); }
+    };
+    load();
+    const t = setInterval(load, 120_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [activeTab]);
 
   // analyze selected asset on change + every 60s
   useEffect(() => {
@@ -541,6 +975,266 @@ export default function App() {
         </div>
       </header>
 
+      {/* ── Positions + History Tab Panel ── */}
+      <div className="border-b border-neutral-800 bg-neutral-900/40">
+        {/* tab bar */}
+        <div className="px-5 pt-2.5 flex items-center gap-1 border-b border-neutral-800/60">
+          <button
+            onClick={() => setActiveTab("positions")}
+            className={`flex items-center gap-1.5 px-3 py-2 text-[11px] font-bold border-b-2 transition-colors ${
+              activeTab === "positions"
+                ? "border-blue-500 text-white"
+                : "border-transparent text-neutral-500 hover:text-neutral-300"
+            }`}
+          >
+            <TrendingUp className="h-3 w-3" />
+            Open Positions
+            {Object.keys(positions).length > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-400 text-[9px] font-black">
+                {Object.keys(positions).length}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab("history")}
+            className={`flex items-center gap-1.5 px-3 py-2 text-[11px] font-bold border-b-2 transition-colors ${
+              activeTab === "history"
+                ? "border-blue-500 text-white"
+                : "border-transparent text-neutral-500 hover:text-neutral-300"
+            }`}
+          >
+            <Terminal className="h-3 w-3" />
+            Trade History
+            {historyLoading && <RefreshCw className="h-2.5 w-2.5 animate-spin text-neutral-600" />}
+          </button>
+          <div className="ml-auto flex items-center gap-4 text-[10px] text-neutral-500 pb-1">
+            <span>Equity: <span className="text-white font-bold">{fmtMoney(portfolio.equity, portfolio.currency)}</span></span>
+            <span>Cash: <span className="text-emerald-400 font-bold">{fmtMoney(portfolio.cash, portfolio.currency)}</span></span>
+            <span className={portfolio.pnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
+              P&L: {portfolio.pnl >= 0 ? "+" : ""}{portfolio.pnl.toFixed(2)}%
+            </span>
+          </div>
+        </div>
+
+        {/* ── Open Positions tab ── */}
+        {activeTab === "positions" && (
+          <>
+            {confirmClose && (
+              <div className="mx-5 mt-3 p-3 bg-rose-500/10 border border-rose-500/30 rounded-lg flex items-center justify-between">
+                <span className="text-[11px] text-rose-300">Close <span className="font-bold text-white">{confirmClose}</span> at market?</span>
+                <div className="flex gap-2">
+                  <button onClick={() => handleClosePosition(confirmClose)}
+                    className="px-3 py-1 text-[10px] bg-rose-600 hover:bg-rose-500 text-white rounded font-bold">Confirm</button>
+                  <button onClick={() => setConfirmClose(null)}
+                    className="px-3 py-1 text-[10px] bg-neutral-700 hover:bg-neutral-600 text-neutral-300 rounded">Cancel</button>
+                </div>
+              </div>
+            )}
+            {Object.keys(positions).length === 0 ? (
+              <div className="px-5 py-4 text-[11px] text-neutral-700 flex items-center gap-2">
+                <Minus className="h-3 w-3" />
+                No open positions — executed signals will appear here
+              </div>
+            ) : (
+              <div className="overflow-x-auto px-5 pb-3 pt-2">
+                <table className="w-full text-[11px] font-mono">
+                  <thead>
+                    <tr className="text-neutral-600 border-b border-neutral-800">
+                      <th className="text-left py-1.5 pr-3">Symbol</th>
+                      <th className="text-right pr-3">Qty</th>
+                      <th className="text-right pr-3">Avg</th>
+                      <th className="text-right pr-3">LTP</th>
+                      <th className="text-right pr-3">P&L</th>
+                      <th className="text-right pr-3">SL</th>
+                      <th className="text-right pr-3">TP</th>
+                      <th className="text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(positions).map(([sym, pos]) => {
+                      const pnl = pos.unrealized_pnl ?? 0;
+                      const pnlPct = pos.unrealized_pnl_pct ?? 0;
+                      const isLong = (pos.qty ?? 0) > 0;
+                      const isClosing = closingPos === sym;
+                      return (
+                        <tr key={sym} className="border-b border-neutral-800/40 hover:bg-neutral-800/20">
+                          <td className="py-2 pr-3">
+                            <button className="text-white font-bold hover:text-blue-400 text-left"
+                              onClick={() => setSelected({ symbol: sym, data_source: "" })}>{sym}</button>
+                            <span className={`ml-1.5 px-1 py-0.5 rounded text-[8px] ${isLong ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"}`}>
+                              {isLong ? "LONG" : "SHORT"}
+                            </span>
+                          </td>
+                          <td className="pr-3 text-right text-neutral-300">{Math.abs(pos.qty ?? 0)}</td>
+                          <td className="pr-3 text-right text-neutral-400">{pos.avg_price ? fmtMoney(pos.avg_price, portfolio.currency) : "—"}</td>
+                          <td className="pr-3 text-right text-neutral-300">{pos.ltp ? fmtMoney(pos.ltp, portfolio.currency) : "—"}</td>
+                          <td className={`pr-3 text-right font-bold ${pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                            <span title={`${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`}>
+                              {pnl >= 0 ? "+" : ""}{fmtMoney(pnl, portfolio.currency)}
+                              <span className="text-[9px] ml-1 opacity-70">{pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%</span>
+                            </span>
+                          </td>
+                          <td className="pr-3 text-right text-rose-400/80">{pos.sl_price ? fmtMoney(pos.sl_price, portfolio.currency) : <span className="text-neutral-700">—</span>}</td>
+                          <td className="pr-3 text-right text-emerald-400/80">{pos.tp_price ? fmtMoney(pos.tp_price, portfolio.currency) : <span className="text-neutral-700">—</span>}</td>
+                          <td className="text-right">
+                            <button disabled={isClosing} onClick={() => setConfirmClose(sym)}
+                              className="px-2 py-1 text-[9px] bg-rose-600/20 hover:bg-rose-600/40 border border-rose-600/40 text-rose-400 rounded disabled:opacity-40 disabled:cursor-not-allowed">
+                              {isClosing ? "Closing…" : "Close"}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ── Trade History tab ── */}
+        {activeTab === "history" && (
+          <>
+            {historyLoading && tradeHistory.length === 0 ? (
+              <div className="px-5 py-4 text-[11px] text-neutral-600 flex items-center gap-2">
+                <RefreshCw className="h-3 w-3 animate-spin" /> Loading trade history…
+              </div>
+            ) : tradeHistory.length === 0 ? (
+              <div className="px-5 py-4 text-[11px] text-neutral-700 flex items-center gap-2">
+                <Minus className="h-3 w-3" /> No executed trades in the last 30 days
+              </div>
+            ) : (() => {
+              const pnlBySymbol = buildTradePnL(tradeHistory);
+              const totalFees = Object.values(pnlBySymbol).reduce((a, v) => a + v.fees, 0);
+              const totalGross = Object.entries(pnlBySymbol).reduce((a, [, v]) => {
+                return v.buyQty === v.sellQty ? a + (v.sellVal - v.buyVal) : a;
+              }, 0);
+              const totalNet = totalGross - totalFees;
+              return (
+                <div className="px-5 pb-3 pt-2">
+                  {/* P&L Summary bar */}
+                  <div className="mb-3 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {[
+                      { label: "Gross P&L", val: totalGross, fmt: v => `${v >= 0 ? "+" : ""}₹${Math.abs(v).toFixed(2)}`, color: totalGross >= 0 ? "text-emerald-400" : "text-rose-400" },
+                      { label: "Total Fees", val: totalFees, fmt: v => `−₹${v.toFixed(2)}`, color: "text-amber-400" },
+                      { label: "Net P&L", val: totalNet, fmt: v => `${v >= 0 ? "+" : ""}₹${Math.abs(v).toFixed(2)}`, color: totalNet >= 0 ? "text-emerald-400" : "text-rose-400" },
+                      { label: "Trades", val: tradeHistory.length, fmt: v => `${v} legs`, color: "text-neutral-300" },
+                    ].map(({ label, val, fmt, color }) => (
+                      <div key={label} className="bg-neutral-800/50 rounded-lg px-3 py-2">
+                        <div className="text-[9px] text-neutral-600 uppercase mb-0.5">{label}</div>
+                        <div className={`text-sm font-black ${color}`}>{fmt(val)}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Trade history table */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[11px] font-mono">
+                      <thead>
+                        <tr className="text-neutral-600 border-b border-neutral-800">
+                          <th className="text-left py-1.5 pr-3">Time</th>
+                          <th className="text-left pr-3">Symbol</th>
+                          <th className="text-center pr-3">Side</th>
+                          <th className="text-right pr-3">Qty</th>
+                          <th className="text-right pr-3">Price</th>
+                          <th className="text-right pr-3">Turnover</th>
+                          <th className="text-right pr-3 text-amber-600">Fees</th>
+                          <th className="text-left pr-3">Strike</th>
+                          <th className="text-left">Expiry</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tradeHistory.map((t, i) => {
+                          const isBuy = t.side === "BUY";
+                          const isOpt = t.option_type === "CALL" || t.option_type === "PUT";
+                          const timeStr = t.time ? t.time.slice(0, 16) : "—";
+                          const tv = t.qty * t.price;
+                          const fee = calcLegFee(t.exchange, t.product, t.option_type, t.side, t.qty, t.price);
+                          return (
+                            <tr key={t.trade_id || i} className="border-b border-neutral-800/40 hover:bg-neutral-800/20">
+                              <td className="py-1.5 pr-3 text-neutral-500 tabular-nums text-[10px]">{timeStr}</td>
+                              <td className="pr-3">
+                                <button className="text-white font-bold hover:text-blue-400 text-left"
+                                  onClick={() => setSelected({ symbol: t.symbol.split("-")[0], data_source: "" })}>
+                                  {t.symbol}
+                                </button>
+                                {isOpt && (
+                                  <span className={`ml-1 px-1 py-0.5 rounded text-[8px] ${t.option_type === "CALL" ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"}`}>
+                                    {t.option_type === "CALL" ? "CE" : "PE"}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="pr-3 text-center">
+                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${
+                                  isBuy ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/20"
+                                        : "bg-rose-500/20 text-rose-400 border-rose-500/20"
+                                }`}>{t.side}</span>
+                              </td>
+                              <td className="pr-3 text-right text-neutral-300 tabular-nums">{t.qty || "—"}</td>
+                              <td className="pr-3 text-right text-neutral-200 font-bold tabular-nums">
+                                {t.price > 0 ? `₹${t.price.toFixed(2)}` : "—"}
+                              </td>
+                              <td className="pr-3 text-right text-neutral-400 tabular-nums">
+                                {tv > 0 ? `₹${tv.toFixed(0)}` : "—"}
+                              </td>
+                              <td className="pr-3 text-right text-amber-500/80 tabular-nums font-mono">
+                                {fee > 0 ? `₹${fee.toFixed(2)}` : "—"}
+                              </td>
+                              <td className="pr-3 text-neutral-500 tabular-nums">
+                                {t.strike ? `₹${parseFloat(t.strike).toFixed(0)}` : <span className="text-neutral-700">—</span>}
+                              </td>
+                              <td className="text-neutral-600 tabular-nums text-[10px]">
+                                {t.expiry ? t.expiry.slice(0, 10) : <span className="text-neutral-700">—</span>}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Per-symbol P&L breakdown */}
+                  <div className="mt-3 pt-3 border-t border-neutral-800/60">
+                    <div className="text-[9px] text-neutral-600 uppercase mb-2 font-bold">Per-Symbol Summary (closed positions)</div>
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(pnlBySymbol).filter(([, v]) => v.buyQty > 0 || v.sellQty > 0).map(([sym, v]) => {
+                        const closed = v.buyQty === v.sellQty;
+                        const gross = closed ? v.sellVal - v.buyVal : null;
+                        const net = gross !== null ? gross - v.fees : null;
+                        return (
+                          <div key={sym} className={`px-2.5 py-1.5 rounded-lg border text-[10px] ${
+                            net !== null
+                              ? net >= 0 ? "border-emerald-500/20 bg-emerald-500/5" : "border-rose-500/20 bg-rose-500/5"
+                              : "border-neutral-700 bg-neutral-800/30"
+                          }`}>
+                            <span className="text-white font-bold">{sym.split("-")[0]}</span>
+                            {net !== null ? (
+                              <>
+                                <span className={`ml-2 font-bold ${net >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                                  Net {net >= 0 ? "+" : ""}₹{net.toFixed(2)}
+                                </span>
+                                <span className="ml-1.5 text-neutral-600">
+                                  (Gross {gross >= 0 ? "+" : ""}₹{gross.toFixed(2)} − Fees ₹{v.fees.toFixed(2)})
+                                </span>
+                              </>
+                            ) : (
+                              <span className="ml-2 text-neutral-500">open · fees ₹{v.fees.toFixed(2)}</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="pt-2 text-[9px] text-neutral-700">
+                    {tradeHistory.length} trade legs · last 30 days · click symbol to chart
+                  </div>
+                </div>
+              );
+            })()}
+          </>
+        )}
+      </div>
+
       {/* ── Opportunity Scanner Strip ── */}
       <div className="px-5 py-3 border-b border-neutral-800 bg-neutral-900/30">
         <div className="flex items-center gap-2 mb-2">
@@ -654,6 +1348,22 @@ export default function App() {
       {/* ── Candlestick Chart (full width) ── */}
       <div className="px-5 pt-5 pb-4">
         <PriceChart asset={selected.symbol} source={selected.data_source} />
+      </div>
+
+      {/* ── Options Chain ── */}
+      <OptionsChainPanel
+        symbol={selected.symbol}
+        expiries={optExpiries}
+        expiry={optExpiry}
+        onExpiry={setOptExpiry}
+        chain={optChain}
+        loading={optChainLoading}
+        signalAction={action}
+      />
+
+      {/* ── Fee Calculator ── */}
+      <div className="px-5 pb-4">
+        <FeeCalculator />
       </div>
 
       {/* ── 3-Column Analysis Grid ── */}
@@ -875,70 +1585,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── Open Positions (full width footer) ── */}
-      <div className="border-t border-neutral-800 bg-neutral-900/40">
-        <div className="px-5 py-3 flex justify-between items-center">
-          <div className="flex items-center gap-2">
-            <TrendingUp className="h-3.5 w-3.5 text-neutral-500" />
-            <span className="text-[11px] font-bold text-neutral-400 uppercase">Open Positions</span>
-            <span className="text-neutral-700 text-[10px]">{Object.keys(portfolio.positions).length} active</span>
-          </div>
-          <div className="flex items-center gap-4 text-[10px] text-neutral-500">
-            <span>Equity: <span className="text-white font-bold">{fmtMoney(portfolio.equity, portfolio.currency)}</span></span>
-            <span>Cash: <span className="text-emerald-400 font-bold">{fmtMoney(portfolio.cash, portfolio.currency)}</span></span>
-            <span className={portfolio.pnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
-              Daily P&L: {portfolio.pnl >= 0 ? "+" : ""}{portfolio.pnl.toFixed(2)}%
-            </span>
-          </div>
-        </div>
-        {Object.keys(portfolio.positions).length === 0 ? (
-          <div className="px-5 pb-4 text-[11px] text-neutral-700 flex items-center gap-2">
-            <Minus className="h-3 w-3" />
-            No open positions — executed signals will appear here
-          </div>
-        ) : (
-          <div className="overflow-x-auto px-5 pb-4">
-            <table className="w-full text-[11px] font-mono">
-              <thead>
-                <tr className="text-neutral-600 border-b border-neutral-800">
-                  <th className="text-left py-1.5 pr-4">Symbol</th>
-                  <th className="text-right pr-4">Qty</th>
-                  <th className="text-right pr-4">Avg Price</th>
-                  <th className="text-right pr-4">Value</th>
-                  <th className="text-right">Side</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(portfolio.positions).map(([sym, pos]) => (
-                  <tr
-                    key={sym}
-                    className="border-b border-neutral-800/40 hover:bg-neutral-800/20 cursor-pointer"
-                    onClick={() => setSelected({ symbol: sym, data_source: "" })}
-                  >
-                    <td className="py-2 pr-4 text-white font-bold">{sym}</td>
-                    <td className="pr-4 text-right text-neutral-300">{pos.qty ?? "—"}</td>
-                    <td className="pr-4 text-right text-neutral-400">
-                      {pos.avg_price ? fmtMoney(pos.avg_price, portfolio.currency) : "—"}
-                    </td>
-                    <td className="pr-4 text-right text-white">
-                      {pos.value ? fmtMoney(pos.value, portfolio.currency) : "—"}
-                    </td>
-                    <td className="text-right">
-                      <span className={`px-1.5 py-0.5 rounded text-[9px] ${
-                        (pos.side || "buy") === "buy"
-                          ? "bg-emerald-500/20 text-emerald-400"
-                          : "bg-rose-500/20 text-rose-400"
-                      }`}>
-                        {(pos.side || "BUY").toUpperCase()}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
     </div>
   );
 }

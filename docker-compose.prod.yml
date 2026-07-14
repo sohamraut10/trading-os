@@ -97,6 +97,7 @@ services:
     environment:
       VITE_API_URL: ${VITE_API_URL:-https://api.${DOMAIN}}
       VITE_WS_URL: ${VITE_WS_URL:-wss://api.${DOMAIN}}
+      VITE_API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
     logging: *default-logging
 
   # ── API — FastAPI with uvicorn ───────────────────────────────────────────────
@@ -132,7 +133,13 @@ services:
       ENABLE_LIVE_SUGGESTIONS: ${ENABLE_LIVE_SUGGESTIONS:-true}
       LIVE_SUGGESTIONS_ASSETS: ${LIVE_SUGGESTIONS_ASSETS:-BTCUSDT,ETHUSDT}
       LIVE_SUGGESTIONS_INTERVAL_SEC: ${LIVE_SUGGESTIONS_INTERVAL_SEC:-60}
+      SCAN_MODE: ${SCAN_MODE:-watchlist}
+      SCAN_BATCH_SIZE: ${SCAN_BATCH_SIZE:-20}
       AUTO_EXECUTE_SIGNALS: ${AUTO_EXECUTE_SIGNALS:-false}
+      TRADE_MODE: ${TRADE_MODE:-equity}
+      OPTIONS_OTM_STRIKES: ${OPTIONS_OTM_STRIKES:-1}
+      OPTIONS_MIN_DAYS_TO_EXPIRY: ${OPTIONS_MIN_DAYS_TO_EXPIRY:-2}
+      OPTIONS_SL_PCT: ${OPTIONS_SL_PCT:-0.50}
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
       MOCK_MODE: ${MOCK_MODE:-false}
       PYTHONUNBUFFERED: "1"

@@ -97,6 +97,10 @@ class ScripMaster:
         self._equities: dict[str, Instrument] = {}
         # commodity.upper() → list of futures sorted by expiry (nearest first)
         self._mcx: dict[str, list[Instrument]] = {}
+        # F&O-eligible equity symbols (have stock futures on NSE) — liquid large/mid caps
+        self._fno: set[str] = set()
+        # underlying → lot size from NSE FUTSTK rows (e.g. MFSL → 700)
+        self._fno_lots: dict[str, int] = {}
 
     # ── Loading ───────────────────────────────────────────────────────────────
 
@@ -125,6 +129,8 @@ class ScripMaster:
 
         equities: dict[str, Instrument] = {}
         mcx: dict[str, list[Instrument]] = {}
+        fno: set[str] = set()
+        fno_lots: dict[str, int] = {}
 
         for raw in csv.DictReader(io.StringIO(text)):
             row: dict[str, str] = {k.strip(): (v.strip() if v else "") for k, v in raw.items()}
@@ -153,6 +159,20 @@ class ScripMaster:
                     lot_size=lot,
                 )
 
+            elif exch == "NSE" and itype == "FUTSTK":
+                # Stock futures → underlying is F&O-eligible; capture lot size
+                underlying = (row.get("SM_SYMBOL_NAME", "") or sym.split("-")[0]).upper()
+                if underlying:
+                    fno.add(underlying)
+                    if underlying not in fno_lots and lot > 1:
+                        fno_lots[underlying] = lot
+
+            elif exch == "NSE" and itype == "FUTIDX":
+                # Index futures → capture index lot size (NIFTY=75, BANKNIFTY=30, etc.)
+                underlying = (row.get("SM_SYMBOL_NAME", "") or sym.split("-")[0]).upper()
+                if underlying and underlying not in fno_lots and lot > 1:
+                    fno_lots[underlying] = lot
+
             elif exch == "MCX" and itype == "FUTCOM":
                 commodity = (row.get("SM_SYMBOL_NAME", "") or sym.split("-")[0]).upper()
                 mcx.setdefault(commodity, []).append(Instrument(
@@ -171,10 +191,12 @@ class ScripMaster:
 
         self._equities = equities
         self._mcx = mcx
+        self._fno = fno
+        self._fno_lots = fno_lots
         self._last_fetch = time.time()
         log.info(
-            "Scrip master ready: %d NSE equities, %d MCX commodities",
-            len(equities), len(mcx),
+            "Scrip master ready: %d NSE equities, %d F&O stocks (%d with lot sizes), %d MCX commodities",
+            len(equities), len(fno), len(fno_lots), len(mcx),
         )
 
     # ── Resolution API ────────────────────────────────────────────────────────
@@ -206,6 +228,10 @@ class ScripMaster:
                 return f
         return futures[-1]  # all expired — return latest anyway
 
+    def fno_lot_size(self, symbol: str) -> int:
+        """Return the F&O lot size for an underlying (from FUTSTK rows). Falls back to 1."""
+        return self._fno_lots.get(symbol.upper(), 1)
+
     def is_mcx(self, symbol: str) -> bool:
         return symbol.upper() in self._mcx
 
@@ -214,6 +240,42 @@ class ScripMaster:
 
     def mcx_commodities(self) -> list[str]:
         return list(self._mcx.keys())
+
+    def fno_symbols(self) -> list[str]:
+        """NSE equities that have stock futures — the liquid large/mid-cap universe."""
+        return sorted(self._fno)
+
+    def tradeable_universe(self) -> list[str]:
+        """
+        Full market scan universe: indices + MCX commodities + F&O-eligible equities.
+        Order: indices first (most liquid options in India), MCX, then F&O equities.
+        Deduplicates NIFTY/NIFTY50 (same security_id=13) by tracking seen security IDs.
+        """
+        seen: set[str] = set()
+        universe: list[str] = []
+
+        # Indices first — liquid weekly/monthly options via IDX_I
+        seen_sids: set[str] = set()
+        for sym in sorted(self._indices.keys()):
+            inst = self._indices[sym]
+            if inst.security_id not in seen_sids:
+                seen_sids.add(inst.security_id)
+                seen.add(sym)
+                universe.append(sym)
+
+        # MCX commodities
+        for sym in list(self._mcx.keys()):
+            if sym not in seen:
+                seen.add(sym)
+                universe.append(sym)
+
+        # F&O equities
+        for sym in sorted(self._fno):
+            if sym not in seen:
+                seen.add(sym)
+                universe.append(sym)
+
+        return universe
 
     # ── UI / API helpers ──────────────────────────────────────────────────────
 

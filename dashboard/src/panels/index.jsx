@@ -320,13 +320,23 @@ export function ConsensusBoard({ cycle }) {
         <div>
           <span className="text-[10px] text-slate-500 uppercase font-mono block">Stop Loss (SL)</span>
           <span className="text-base font-bold font-mono text-red-400">
-            {isApproved ? `₹${risk.stop_loss_price?.toLocaleString()}` : "N/A"}
+            {!isApproved ? "N/A"
+              : risk.stop_loss_price > 0
+                ? `₹${risk.stop_loss_price?.toLocaleString()}`
+                : risk.options_sl_pct != null
+                  ? `${(risk.options_sl_pct * 100).toFixed(0)}% of premium`
+                  : "options SL"}
           </span>
         </div>
         <div>
           <span className="text-[10px] text-slate-500 uppercase font-mono block">Take Profit (TP)</span>
           <span className="text-base font-bold font-mono text-emerald-400">
-            {isApproved ? `₹${risk.take_profit_price?.toLocaleString()}` : "N/A"}
+            {!isApproved ? "N/A"
+              : risk.take_profit_price > 0
+                ? `₹${risk.take_profit_price?.toLocaleString()}`
+                : risk.options_sl_pct != null
+                  ? `${(risk.options_sl_pct * 200).toFixed(0)}% gain (1:2 R:R)`
+                  : "signal exit"}
           </span>
         </div>
       </div>
@@ -502,6 +512,7 @@ export function EquityCurve({ data, stats }) {
 
 // 8. Open Positions
 export function Positions({ positions }) {
+  const hasOptions = positions.some((p) => p.is_options);
   return (
     <div className="bg-slate-900/60 border border-slate-800/80 rounded-xl p-5 backdrop-blur-lg">
       <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-3">Open Positions</span>
@@ -510,8 +521,11 @@ export function Positions({ positions }) {
           <thead>
             <tr className="border-b border-slate-800 text-slate-500">
               <th className="pb-2">Asset</th>
+              {hasOptions && <th className="pb-2">Type</th>}
+              {hasOptions && <th className="pb-2">Strike</th>}
+              {hasOptions && <th className="pb-2">≈Δ</th>}
               <th className="pb-2">Qty</th>
-              <th className="pb-2">Entry Price</th>
+              <th className="pb-2">Entry</th>
               <th className="pb-2">Value</th>
               <th className="pb-2 text-right">PnL</th>
             </tr>
@@ -519,17 +533,45 @@ export function Positions({ positions }) {
           <tbody>
             {positions.length === 0 ? (
               <tr>
-                <td colSpan={5} className="text-center text-slate-600 py-4">No active open positions.</td>
+                <td colSpan={hasOptions ? 8 : 5} className="text-center text-slate-600 py-4">No active open positions.</td>
               </tr>
             ) : (
               positions.map((pos, idx) => (
                 <tr key={idx} className="border-b border-slate-800/40">
-                  <td className="py-2.5 font-bold text-slate-300">{pos.asset}</td>
-                  <td className="py-2.5 text-slate-400">{pos.qty.toFixed(4)}</td>
+                  <td className="py-2.5 font-bold text-slate-300">
+                    {pos.is_options ? pos.underlying : pos.asset}
+                  </td>
+                  {hasOptions && (
+                    <td className="py-2.5">
+                      {pos.option_type ? (
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                          pos.option_type === "CE"
+                            ? "bg-emerald-500/15 text-emerald-400"
+                            : "bg-red-500/15 text-red-400"
+                        }`}>
+                          {pos.option_type}
+                        </span>
+                      ) : <span className="text-slate-600">—</span>}
+                    </td>
+                  )}
+                  {hasOptions && (
+                    <td className="py-2.5 text-slate-400">
+                      {pos.strike ? pos.strike.toLocaleString() : "—"}
+                    </td>
+                  )}
+                  {hasOptions && (
+                    <td className={`py-2.5 font-bold ${
+                      pos.approx_delta == null ? "text-slate-600"
+                        : pos.approx_delta > 0 ? "text-emerald-400" : "text-red-400"
+                    }`}>
+                      {pos.approx_delta != null ? pos.approx_delta.toFixed(2) : "—"}
+                    </td>
+                  )}
+                  <td className="py-2.5 text-slate-400">{Number(pos.qty).toFixed(pos.is_options ? 0 : 4)}</td>
                   <td className="py-2.5 text-slate-400">₹{pos.avg_price?.toLocaleString()}</td>
                   <td className="py-2.5 text-slate-300">₹{pos.value?.toLocaleString()}</td>
                   <td className={`py-2.5 text-right font-bold ${pos.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                    {pos.pnl >= 0 ? "+" : ""}{pos.pnl?.toFixed(2)}%
+                    {pos.pnl >= 0 ? "+" : ""}{Number(pos.pnl)?.toFixed(2)}%
                   </td>
                 </tr>
               ))

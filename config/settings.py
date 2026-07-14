@@ -97,9 +97,28 @@ class Settings(BaseSettings):
     enable_live_suggestions: bool = True
     live_suggestions_assets: str = "BTCUSDT,ETHUSDT,SOLUSDT,EURUSD,GBPUSD,USDJPY"
     live_suggestions_interval_sec: float = 15.0
+    # "watchlist" → scan live_suggestions_assets only
+    # "full_market" → rotate through all F&O equities + MCX from the scrip master
+    scan_mode: Literal["watchlist", "full_market"] = "watchlist"
+    scan_batch_size: int = 20   # symbols per rotation in full_market mode
     # When True, the live-suggestions loop will fire real orders when consensus
     # produces a BUY/SELL signal. Keep False (default) until manually enabled.
     auto_execute_signals: bool = False
+
+    # ── Options trading ───────────────────────────────────────────────────────
+    # "equity"  → trade the underlying directly (default)
+    # "options" → convert every signal into an options buy (CE for BUY, PE for SELL)
+    trade_mode: Literal["equity", "options"] = "equity"
+    options_otm_strikes: int = 1        # how many strikes OTM from ATM
+    options_min_days_to_expiry: int = 2 # skip expiry if fewer days remain
+    options_sl_pct: float = 0.50        # close option if premium falls by this fraction
+    # In options mode, premium paid = max loss (unlike equity notional).
+    # 25% allocation per trade is standard for defined-risk options strategies.
+    # Overrides risk.max_position_pct when trade_mode="options".
+    options_max_position_pct: float = 0.25
+    # Minimum R:R ratio to take a trade (equity only — options enforced via TP order).
+    # Trades with expected reward < min_risk_reward × risk are rejected outright.
+    min_risk_reward: float = 2.0
 
     # Shared secret required on the Authorization header of POST /cron/tick.
     # Empty disables the endpoint entirely (fails closed, unlike api_auth_token).

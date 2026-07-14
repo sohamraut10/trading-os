@@ -37,6 +37,8 @@ from core.streaming.event_bus import EventBus
 from core.persistence.repository import Repository
 from core.orchestrator import Orchestrator
 from core.data.instruments import scrip_master
+from core.data.scanner import market_scanner
+from core.monitoring.position_monitor import PositionMonitor
 
 log = logging.getLogger("trading_os.api")
 
@@ -285,15 +287,32 @@ async def run_consensus_cycle(asset: str, timeframe: str, candle_limit: int, exe
 
 
 async def live_suggestions_loop():
-    """Loop indefinitely through the configured watchlist, pushing live suggestions to the websocket."""
+    """Rotate through the full tradeable universe or a fixed watchlist, running consensus on each symbol."""
     if not settings.enable_live_suggestions:
-        log.info("Live suggestions loop disabled via settings.enable_live_suggestions")
+        log.info("Live suggestions loop disabled")
         return
-    assets = [a.strip() for a in settings.live_suggestions_assets.split(",") if a.strip()]
-    while True:
-        for asset in assets:
-            await run_consensus_cycle(asset, timeframe="1h", candle_limit=300, execute_if_signal=settings.auto_execute_signals)
+
+    if settings.scan_mode == "full_market":
+        market_scanner.refresh()
+        log.info(
+            "Full-market scan: %d instruments, batch=%d, ~%.0f min per full rotation",
+            market_scanner.universe_size,
+            settings.scan_batch_size,
+            market_scanner.universe_size / settings.scan_batch_size * settings.live_suggestions_interval_sec / 60,
+        )
+        while True:
+            batch = market_scanner.next_batch(settings.scan_batch_size)
+            log.info("Scanning batch [%d/%d]: %s", market_scanner.pointer, market_scanner.universe_size, ", ".join(batch))
+            for asset in batch:
+                await run_consensus_cycle(asset, timeframe="1h", candle_limit=300, execute_if_signal=settings.auto_execute_signals)
             await asyncio.sleep(settings.live_suggestions_interval_sec)
+    else:
+        assets = [a.strip() for a in settings.live_suggestions_assets.split(",") if a.strip()]
+        log.info("Watchlist scan: %d assets", len(assets))
+        while True:
+            for asset in assets:
+                await run_consensus_cycle(asset, timeframe="1h", candle_limit=300, execute_if_signal=settings.auto_execute_signals)
+                await asyncio.sleep(settings.live_suggestions_interval_sec)
 
 
 @asynccontextmanager
@@ -302,6 +321,8 @@ async def lifespan(app: FastAPI):
     await state.db.connect()
     try:
         await scrip_master.ensure_loaded()
+        if settings.scan_mode == "full_market":
+            market_scanner.refresh()
     except Exception:
         log.warning("Scrip master unavailable at startup — instrument lookup will use fallback")
 
@@ -333,12 +354,24 @@ async def lifespan(app: FastAPI):
     # There's no persistent process to run this loop in on serverless
     # platforms (e.g. Vercel sets VERCEL=1) — a Vercel Cron hitting
     # POST /cron/tick replaces it there instead.
+    monitor_task = None
     loop_task = None
     if not os.environ.get("VERCEL"):
         loop_task = asyncio.create_task(live_suggestions_loop())
+        position_monitor = PositionMonitor(
+            broker=state.broker,
+            market_data=state.market_data,
+            portfolio=state.portfolio,
+            risk_cfg=state.risk.cfg,
+            alert_router=state.alerts,
+            weights_manager=state.weights_manager,
+        )
+        monitor_task = asyncio.create_task(position_monitor.run_forever())
     try:
         yield
     finally:
+        if monitor_task:
+            monitor_task.cancel()
         if loop_task:
             loop_task.cancel()
         await state.db.close()
@@ -533,15 +566,84 @@ async def portfolio() -> dict:
     positions = await state.broker.get_positions()
     from core.execution.broker_interface import DhanBroker
     currency = "INR" if isinstance(state.broker, DhanBroker) else "USD"
+    # Derive daily P&L from live position data (sum of unrealized + realized)
+    total_unrealized = sum(p.get("unrealized_pnl", 0) for p in positions.values())
+    total_realized   = sum(p.get("realized_pnl", 0)   for p in positions.values())
+    total_pnl = total_unrealized + total_realized
+    equity = account["equity"]
+    daily_pnl_pct = (total_pnl / equity * 100) if equity else 0.0
     return {
-        "equity": account["equity"],
+        "equity": equity,
         "cash": account["cash"],
         "positions": positions,
-        "daily_pnl_pct": state.portfolio.daily_pnl_pct,
+        "daily_pnl_pct": daily_pnl_pct,
+        "daily_pnl": round(total_pnl, 2),
         "open_trades": len(positions),
         "mode": "MOCK" if state.mock_mode else "LIVE",
         "currency": currency,
     }
+
+
+@router.get("/positions")
+async def get_positions_enriched() -> dict:
+    """Enriched position data with live P&L and active SL/TP order prices."""
+    from core.execution.broker_interface import DhanBroker
+    positions = await state.broker.get_positions()
+    open_orders: list[dict] = []
+    if isinstance(state.broker, DhanBroker):
+        open_orders = await state.broker.get_open_orders()
+
+    sl_map: dict[str, float] = {}
+    tp_map: dict[str, float] = {}
+    for o in open_orders:
+        sym = o.get("tradingSymbol", "")
+        otype = o.get("orderType", "")
+        trigger = float(o.get("triggerPrice", 0) or 0)
+        price = float(o.get("price", 0) or 0)
+        if otype in ("STOP_LOSS", "STOP_LOSS_MARKET", "SL", "SLM"):
+            sl_map[sym] = trigger or price
+        elif otype == "LIMIT" and price:
+            tp_map[sym] = price
+
+    result = {}
+    for sym, pos in positions.items():
+        enriched = {
+            **pos,
+            "sl_price": sl_map.get(sym),
+            "tp_price": tp_map.get(sym),
+        }
+        # Enrich options positions (symbol format: "NIFTY-25600-CE")
+        parts = sym.split("-")
+        if len(parts) == 3 and parts[2] in ("CE", "PE"):
+            underlying = parts[0]
+            try:
+                strike = float(parts[1])
+            except ValueError:
+                strike = 0.0
+            option_type = parts[2]
+            try:
+                spot = await state.market_data.get_current_price(underlying) or 0.0
+            except Exception:
+                spot = 0.0
+            # Approximate delta using linear moneyness model (no Black-Scholes needed)
+            # ATM ≈ 0.5, shifts ±0.25 per 1% moneyness. CE delta positive, PE negative.
+            approx_delta = None
+            if spot > 0 and strike > 0:
+                moneyness = (spot - strike) / spot
+                if option_type == "PE":
+                    moneyness = -moneyness
+                approx_delta = round(max(0.05, min(0.95, 0.5 + moneyness * 25)), 2)
+                if option_type == "PE":
+                    approx_delta = -approx_delta
+            enriched.update({
+                "is_options": True,
+                "underlying": underlying,
+                "strike": strike,
+                "option_type": option_type,
+                "approx_delta": approx_delta,
+            })
+        result[sym] = enriched
+    return result
 
 
 @router.get("/agents/performance")
@@ -880,6 +982,39 @@ async def options_chain(symbol: str = "NIFTY", expiry: str = "") -> dict:
     except Exception:
         log.exception("Failed to fetch option chain for %s %s", symbol, expiry)
         return {"symbol": symbol, "expiry": expiry, "spot": 0.0, "strikes": []}
+
+
+@router.get("/trades/history")
+async def trades_history(days: int = 30) -> dict:
+    """Return executed trade history from Dhan (up to 90 days)."""
+    from core.execution.broker_interface import DhanBroker
+    if not isinstance(state.broker, DhanBroker):
+        return {"trades": []}
+    raw = await state.broker.get_trade_history(days=min(days, 90))
+    trades = []
+    for t in raw:
+        expiry_raw = t.get("drvExpiryDate") or ""
+        expiry = expiry_raw if expiry_raw and not expiry_raw.startswith("0001") else None
+        strike_raw = t.get("drvStrikePrice")
+        strike = float(strike_raw) if strike_raw and float(strike_raw) > 0 else None
+        opt_type = t.get("drvOptionType") or ""
+        option_type = opt_type if opt_type in ("CALL", "PUT") else None
+        trades.append({
+            "trade_id":   t.get("tradeId") or t.get("orderId", ""),
+            "order_id":   t.get("orderId", ""),
+            "symbol":     t.get("tradingSymbol") or t.get("customSymbol", ""),
+            "side":       t.get("transactionType", ""),
+            "qty":        float(t.get("tradedQuantity", 0) or 0),
+            "price":      float(t.get("tradedPrice", 0) or 0),
+            "exchange":   t.get("exchangeSegment", ""),
+            "product":    t.get("productType", ""),
+            "order_type": t.get("orderType", ""),
+            "strike":     strike,
+            "option_type": option_type,
+            "expiry":     expiry,
+            "time":       t.get("createTime") or t.get("updateTime", ""),
+        })
+    return {"trades": trades}
 
 
 @router.get("/validate/prices")

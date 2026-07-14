@@ -396,10 +396,18 @@ class ConsensusEngine:
         sl_pct = max(atr_pct * 1.5, self.risk_cfg.max_trade_drawdown)
         tp_pct = sl_pct * self.risk_cfg.default_rr_ratio
 
-        # Half-Kelly position sizing
+        # Position sizing.
+        # Equity: half-Kelly on notional (5% base) — conservative because losses
+        # are uncapped without a stop (leverage risk).
+        # Options: full-Kelly on premium (25% base) — safe because premium paid IS
+        # the max loss; no further leverage risk beyond what you allocate.
         kelly_fraction = (confidence / 100 - 0.5) * 2  # [0,1]
-        base_size = self.risk_cfg.max_position_pct
-        position_size = base_size * kelly_fraction * 0.5  # half-Kelly
+        is_options = settings.trade_mode == "options"
+        base_size = (
+            settings.options_max_position_pct if is_options else self.risk_cfg.max_position_pct
+        )
+        kelly_damper = 1.0 if is_options else 0.5          # full-Kelly for options
+        position_size = base_size * kelly_fraction * kelly_damper
         position_size = max(0.005, min(position_size, base_size))
 
         if regime == "volatile":
