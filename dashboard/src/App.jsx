@@ -5,7 +5,7 @@ import {
   RefreshCw, AlertTriangle, CheckCircle, Search,
 } from 'lucide-react';
 import { createChart } from 'lightweight-charts';
-import { fetchPortfolio, fetchPairSuggestions, analyzeAsset, fetchSystem, fetchCandles, fetchPositions, closePosition, fetchOptionExpiries, fetchOptionChain, fetchTradeHistory } from './api';
+import { fetchPortfolio, fetchPairSuggestions, analyzeAsset, fetchSystem, fetchCandles, fetchPositions, closePosition, fetchOptionExpiries, fetchOptionChain, fetchTradeHistory, isMarketLive } from './api';
 import { connectEvents } from './eventsPoller';
 
 // ── constants ─────────────────────────────────────────────────────────────────
@@ -238,11 +238,12 @@ function PairDropdown({ pairs, selected, onSelect }) {
 // ── scanner card ─────────────────────────────────────────────────────────────
 
 function ScannerCard({ symbol, result, isActive, onClick }) {
-  const action    = result?.action;
-  const conf      = result?.confidence || 0;
-  const tradeable = result?.risk?.status === "APPROVED" || result?.risk?.status === "SCALED_DOWN";
-  const scanning  = result === null;
-  const price     = result?.price;
+  const action      = result?.action;
+  const conf        = result?.confidence || 0;
+  const tradeable   = result?.risk?.status === "APPROVED" || result?.risk?.status === "SCALED_DOWN";
+  const scanning    = result === null;
+  const closed      = result?.marketClosed === true;
+  const price       = result?.price;
 
   return (
     <button
@@ -250,17 +251,23 @@ function ScannerCard({ symbol, result, isActive, onClick }) {
       className={`flex-shrink-0 rounded-xl border p-3 text-left transition-all cursor-pointer w-36
         ${isActive
           ? "border-blue-500/60 bg-blue-500/5 shadow-[0_0_12px_rgba(59,130,246,0.2)]"
-          : "border-neutral-800 bg-neutral-900 hover:border-neutral-700"}`}
+          : closed
+            ? "border-neutral-800/50 bg-neutral-900/50 opacity-40"
+            : "border-neutral-800 bg-neutral-900 hover:border-neutral-700"}`}
     >
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-xs font-bold text-white">{symbol}</span>
         {scanning
           ? <RefreshCw className="h-3 w-3 text-neutral-600 animate-spin" />
-          : <span className={`text-[10px] font-bold ${signalCls(action)}`}>{action || "—"}</span>
+          : closed
+            ? <span className="text-[10px] text-neutral-600">CLOSED</span>
+            : <span className={`text-[10px] font-bold ${signalCls(action)}`}>{action || "—"}</span>
         }
       </div>
       {scanning ? (
         <div className="text-[10px] text-neutral-600 animate-pulse">scanning…</div>
+      ) : closed ? (
+        <div className="text-[10px] text-neutral-700">market closed</div>
       ) : (
         <>
           <div className="flex items-center gap-1 mb-1.5">
@@ -862,9 +869,13 @@ export default function App() {
     });
     for (const sym of wl) {
       if (!scanActiveRef.current) break;
+      if (!isMarketLive(sym)) {
+        setScanResults(prev => ({ ...prev, [sym]: { action: null, confidence: null, marketClosed: true } }));
+        continue;
+      }
       try {
         const r = await analyzeAsset(sym);
-        setScanResults(prev => ({ ...prev, [sym]: { action: r.action, confidence: r.confidence, risk: r.risk_check, price: r.current_price } }));
+        setScanResults(prev => ({ ...prev, [sym]: { action: r.action, confidence: r.confidence, risk: r.risk_check, price: r.current_price, marketClosed: false } }));
         addEvent("SCAN", `${sym} → ${r.final_decision} ${r.action ? `(${(r.confidence||0).toFixed(0)}%)` : ""}`);
       } catch { /* skip */ }
       await new Promise(res => setTimeout(res, 4000));
