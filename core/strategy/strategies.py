@@ -77,7 +77,7 @@ class MeanReversionStrategy(BaseStrategy):
     strategy_type = StrategyType.MEAN_REVERSION
     default_timeframes = ["15m", "1h"]
     filter = StrategyFilter(
-        min_confidence=65.0,
+        min_confidence=60.0,
         min_rr=1.8,
         required_regime=["sideways", "bull", "bear"],
         max_hold_bars=48,
@@ -90,13 +90,11 @@ class MeanReversionStrategy(BaseStrategy):
         if signal.confidence < self.filter.min_confidence:
             return False, f"Confidence {signal.confidence:.0f}% below MR threshold"
 
-        # Require quant agent to have voted in same direction
-        quant_vote = next(
-            (a for a in signal.agents if a["name"] == "Quant" and a["decision"] == signal.action.value),
-            None
-        ) if signal.action else None
-        if not quant_vote:
-            return False, "Mean reversion requires Quant agent alignment — missing"
+        # Require quant agent to align if it is present
+        quant_agent = next((a for a in signal.agents if a["name"] == "Quant"), None)
+        if quant_agent:
+            if signal.action and quant_agent["decision"] != signal.action.value:
+                return False, "Mean reversion requires Quant agent alignment — Quant disagreed"
 
         return True, "Mean reversion filter passed"
 
@@ -191,9 +189,8 @@ def select_strategy(regime: str, timeframe: str, user_override: str | None = Non
         return STRATEGY_REGISTRY[StrategyType.TREND_FOLLOW]
     if regime in ("bull", "bear"):
         return STRATEGY_REGISTRY[StrategyType.SWING]
-    if regime == "sideways":
-        return STRATEGY_REGISTRY[StrategyType.MEAN_REVERSION]
-    return STRATEGY_REGISTRY[StrategyType.SWING]  # default
+    # sideways on 1h+ → MeanReversionStrategy (gracefully degrades if Quant agent is missing)
+    return STRATEGY_REGISTRY[StrategyType.MEAN_REVERSION]
 
 
 def _tf_to_minutes(tf: str) -> int:

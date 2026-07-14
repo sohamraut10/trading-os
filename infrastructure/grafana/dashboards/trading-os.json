@@ -1,0 +1,864 @@
+{
+  "title": "Trading OS \u2014 Production",
+  "uid": "trading-os-prod",
+  "schemaVersion": 38,
+  "version": 2,
+  "refresh": "10s",
+  "time": {
+    "from": "now-3h",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "tags": [
+    "trading",
+    "production"
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Portfolio Equity (USD)",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "trading_portfolio_equity_usd",
+          "datasource": "Prometheus",
+          "legendFormat": "equity"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 95000
+              },
+              {
+                "color": "green",
+                "value": 100000
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Daily P&L %",
+      "gridPos": {
+        "x": 5,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "trading_daily_pnl_pct * 100",
+          "datasource": "Prometheus"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": -1
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Open Trades",
+      "gridPos": {
+        "x": 9,
+        "y": 0,
+        "w": 3,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "trading_open_trades",
+          "datasource": "Prometheus"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Circuit Breaker",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 3,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "trading_circuit_breaker_active",
+          "datasource": "Prometheus"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "CLEAR",
+                  "color": "green"
+                },
+                "1": {
+                  "text": "ACTIVE",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "TRUE Signals (1 h)",
+      "gridPos": {
+        "x": 15,
+        "y": 0,
+        "w": 3,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "increase(trading_true_signals_total[1h])",
+          "datasource": "Prometheus"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "green",
+            "mode": "fixed"
+          }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "FALSE Signals (1 h)",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 3,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "increase(trading_false_signals_total[1h])",
+          "datasource": "Prometheus"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "red",
+            "mode": "fixed"
+          }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "DA Vetoes (1 h)",
+      "gridPos": {
+        "x": 21,
+        "y": 0,
+        "w": 3,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "increase(trading_da_vetoes_total[1h])",
+          "datasource": "Prometheus"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "orange",
+            "mode": "fixed"
+          }
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Portfolio Equity Over Time",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "trading_portfolio_equity_usd",
+          "legendFormat": "Equity (USD)",
+          "datasource": "Prometheus"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "displayMode": "list"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "API Request Latency (p50 / p95 / p99)",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(trading_cycle_latency_ms_bucket[2m]))",
+          "legendFormat": "p50",
+          "datasource": "Prometheus"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(trading_cycle_latency_ms_bucket[2m]))",
+          "legendFormat": "p95",
+          "datasource": "Prometheus"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(trading_cycle_latency_ms_bucket[2m]))",
+          "legendFormat": "p99",
+          "datasource": "Prometheus"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2
+          }
+        }
+      }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Agent Confidence Over Time",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "trading_agent_confidence{agent='Technical'}",
+          "legendFormat": "Technical",
+          "datasource": "Prometheus"
+        },
+        {
+          "expr": "trading_agent_confidence{agent='Sentiment'}",
+          "legendFormat": "Sentiment",
+          "datasource": "Prometheus"
+        },
+        {
+          "expr": "trading_agent_confidence{agent='Quant'}",
+          "legendFormat": "Quant",
+          "datasource": "Prometheus"
+        },
+        {
+          "expr": "trading_agent_confidence{agent='OrderFlow'}",
+          "legendFormat": "Order Flow",
+          "datasource": "Prometheus"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2
+          }
+        }
+      }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Signal Rate (per minute)",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(trading_true_signals_total[1m]) * 60",
+          "legendFormat": "TRUE/min",
+          "datasource": "Prometheus"
+        },
+        {
+          "expr": "rate(trading_false_signals_total[1m]) * 60",
+          "legendFormat": "FALSE/min",
+          "datasource": "Prometheus"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2
+          }
+        }
+      }
+    },
+    {
+      "id": 22,
+      "type": "gauge",
+      "title": "Portfolio Exposure",
+      "gridPos": {
+        "x": 20,
+        "y": 12,
+        "w": 4,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "trading_portfolio_exposure_pct * 100",
+          "datasource": "Prometheus"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 30
+              },
+              {
+                "color": "red",
+                "value": 38
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "System Resources (MacBook M1)",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false
+    },
+    {
+      "id": 31,
+      "type": "gauge",
+      "title": "CPU Usage %",
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 4,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "trading_host_cpu_pct",
+          "datasource": "Prometheus",
+          "legendFormat": "CPU %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 60
+              },
+              {
+                "color": "red",
+                "value": 85
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 32,
+      "type": "gauge",
+      "title": "RAM Usage %",
+      "gridPos": {
+        "x": 4,
+        "y": 21,
+        "w": 4,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "trading_host_ram_pct",
+          "datasource": "Prometheus",
+          "legendFormat": "RAM %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 88
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 33,
+      "type": "gauge",
+      "title": "Disk Usage %",
+      "gridPos": {
+        "x": 8,
+        "y": 21,
+        "w": 4,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "trading_host_disk_pct",
+          "datasource": "Prometheus",
+          "legendFormat": "Disk %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "RAM Available (GB)",
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "trading_host_ram_avail_gb",
+          "legendFormat": "Available (GB)",
+          "datasource": "Prometheus"
+        },
+        {
+          "expr": "trading_host_ram_total_gb",
+          "legendFormat": "Total (GB)",
+          "datasource": "Prometheus"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decgbytes",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      }
+    },
+    {
+      "id": 40,
+      "type": "row",
+      "title": "Risk Metrics",
+      "gridPos": {
+        "x": 0,
+        "y": 27,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false
+    },
+    {
+      "id": 41,
+      "type": "gauge",
+      "title": "Consecutive Losses",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 4,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "trading_consecutive_losses",
+          "datasource": "Prometheus"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 5,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 42,
+      "type": "timeseries",
+      "title": "Daily P&L % Over Time",
+      "gridPos": {
+        "x": 4,
+        "y": 28,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "trading_daily_pnl_pct * 100",
+          "legendFormat": "Daily P&L %",
+          "datasource": "Prometheus"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 43,
+      "type": "stat",
+      "title": "Avg Cycle Latency (1 m)",
+      "gridPos": {
+        "x": 16,
+        "y": 28,
+        "w": 4,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "rate(trading_cycle_latency_ms_sum[1m]) / rate(trading_cycle_latency_ms_count[1m])",
+          "datasource": "Prometheus",
+          "legendFormat": "avg ms"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5000
+              },
+              {
+                "color": "red",
+                "value": 15000
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 44,
+      "type": "stat",
+      "title": "Prometheus Targets Up",
+      "gridPos": {
+        "x": 20,
+        "y": 28,
+        "w": 4,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "count(up == 1)",
+          "legendFormat": "targets up",
+          "datasource": "Prometheus"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 2
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

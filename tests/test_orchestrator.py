@@ -114,6 +114,25 @@ async def test_cycle_recovers_from_data_error():
 
 
 @pytest.mark.asyncio
+async def test_cycle_survives_order_book_failure():
+    orch = _make_orchestrator()
+    orch._data.get_order_book = AsyncMock(side_effect=RuntimeError("order book unavailable"))
+    result = await orch.run_cycle()
+    # A synthetic order book should be substituted so the cycle still completes
+    assert result.error is None
+    assert result.signal is not None
+
+
+@pytest.mark.asyncio
+async def test_cycle_result_always_has_risk_result():
+    orch = _make_orchestrator()
+    result = await orch.run_cycle()
+    assert result.error is None
+    assert result.risk_result is not None
+    assert result.current_price > 0
+
+
+@pytest.mark.asyncio
 async def test_portfolio_orchestrator_status():
     from core.orchestrator import PortfolioOrchestrator
     provider = MockProvider(seed=1)

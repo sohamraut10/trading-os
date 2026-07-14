@@ -22,6 +22,7 @@ class AgentName(str, Enum):
     QUANT = "Quant"
     ORDER_FLOW = "OrderFlow"
     DEVILS_ADVOCATE = "DevilsAdvocate"
+    OPTIONS = "Options"
     META = "Meta"
 
 
@@ -76,6 +77,7 @@ class MarketContext:
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: float = field(default_factory=time.time)
     hypothesis: TradeHypothesis | None = None
+    iv_rank: float = -1.0                  # IV rank 0–100; -1 = unavailable
 
 
 @dataclass

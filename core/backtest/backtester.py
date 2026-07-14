@@ -17,6 +17,7 @@ from core.agents.devils_advocate_agent import DevilsAdvocateAgent
 from core.agents.meta_agent import ConsensusEngine, TradeSignal
 from core.monitoring.regime_detector import detect_regime
 from core.strategy.selector import StrategySelector
+from core.monitoring.analytics import PortfolioAnalytics
 
 
 @dataclass
@@ -50,6 +51,8 @@ class BacktestResult:
     avg_hold_bars: float
     trades: list[Trade]
     equity_curve: list[float]
+    monte_carlo_var_95: float = 0.0
+    monte_carlo_median_return: float = 0.0
 
     def summary(self) -> dict:
         return {
@@ -62,6 +65,8 @@ class BacktestResult:
             "max_drawdown_pct": f"{self.max_drawdown_pct:.2f}%",
             "profit_factor": f"{self.profit_factor:.3f}",
             "avg_hold_bars": f"{self.avg_hold_bars:.1f}",
+            "monte_carlo_var_95": f"{self.monte_carlo_var_95:.2f}%",
+            "monte_carlo_median_return": f"{self.monte_carlo_median_return:.2f}%",
             "equity_curve": self.equity_curve,
             "trades": [
                 {
@@ -267,6 +272,9 @@ class Backtester:
         gross_loss = float(abs(losses.sum())) if len(losses) > 0 else 1e-9
         pf = gross_profit / gross_loss
 
+        analytics = PortfolioAnalytics()
+        mc_median, mc_var_95 = analytics.run_monte_carlo([float(x) for x in returns])
+
         return BacktestResult(
             total_trades=len(trades),
             win_rate=win_rate,
@@ -279,4 +287,6 @@ class Backtester:
             avg_hold_bars=float(avg_bars),
             trades=trades,
             equity_curve=list(equity_curve),
+            monte_carlo_var_95=mc_var_95,
+            monte_carlo_median_return=mc_median,
         )

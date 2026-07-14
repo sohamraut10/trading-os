@@ -1,0 +1,33 @@
+# Cloudflare Tunnel ingress rules — trading-os (mu3en.diy)
+# Authentication is via TUNNEL_TOKEN env var in docker-compose.prod.yml.
+# This file only defines which hostnames route to which internal services.
+
+ingress:
+  - hostname: trade.mu3en.diy
+    service: http://caddy:80
+    originRequest:
+      connectTimeout: 10s
+      tcpKeepAlive: 30s
+      keepAliveTimeout: 90s
+      keepAliveConnections: 100
+      httpHostHeader: trade.mu3en.diy
+
+  - hostname: api.mu3en.diy
+    service: http://caddy:80
+    originRequest:
+      connectTimeout: 10s
+      tcpKeepAlive: 30s
+      keepAliveTimeout: 90s
+      keepAliveConnections: 100
+      httpHostHeader: api.mu3en.diy
+
+  - hostname: grafana.mu3en.diy
+    service: http://caddy:80
+    originRequest:
+      connectTimeout: 10s
+      tcpKeepAlive: 30s
+      keepAliveTimeout: 90s
+      keepAliveConnections: 100
+      httpHostHeader: grafana.mu3en.diy
+
+  - service: http_status:404
