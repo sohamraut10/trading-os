@@ -928,13 +928,13 @@ export default function App() {
   });
   const opportunities = sortedWL.filter(s => {
     const r = scanResults[s];
-    return r && r.action && r.action !== "HOLD" && r.confidence >= 60;
+    return r && !r.marketClosed && r.action && r.action !== "HOLD" && r.confidence >= 60;
   });
 
   const tradeableOpps = sortedWL
     .filter(s => {
       const r = scanResults[s];
-      return r && r.action && r.action !== "HOLD" && r.confidence >= 60 &&
+      return r && !r.marketClosed && r.action && r.action !== "HOLD" && r.confidence >= 60 &&
              (r.risk?.status === "APPROVED" || r.risk?.status === "SCALED_DOWN");
     })
     .map(s => ({ sym: s, result: scanResults[s] }));
