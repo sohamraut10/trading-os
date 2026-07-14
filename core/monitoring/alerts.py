@@ -9,6 +9,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Literal
 
 from core.agents.meta_agent import TradeSignal
+from core.risk.risk_engine import RiskCheckResult, RiskStatus
 
 _MCX_PREFIXES = (
     "GOLD", "SILVER", "CRUDEOIL", "NATURALGAS", "NATGAS", "COPPER",
@@ -91,8 +92,26 @@ class AlertRouter:
             self._alerters.append(t)
             self._telegram_alerters.append(t)
 
-    async def signal_generated(self, signal: TradeSignal) -> None:
+    async def signal_generated(
+        self,
+        signal: TradeSignal,
+        risk: "RiskCheckResult | None" = None,
+    ) -> None:
         if signal.final_decision:
+            # Suppress Telegram if market is closed OR if capital is insufficient.
+            # Agents may reach consensus on a signal the risk engine then rejects
+            # (e.g. not enough free cash for even 1 lot) — no point alerting on
+            # a trade that will not be placed.
+            capital_ok = risk is None or risk.status in (RiskStatus.APPROVED, RiskStatus.SCALED_DOWN)
+            risk_body = ""
+            if risk is not None:
+                if risk.status == RiskStatus.REJECTED:
+                    risk_body = f"\n⚠️ Risk: REJECTED — {'; '.join(risk.rejection_reasons)}"
+                elif risk.status == RiskStatus.SCALED_DOWN:
+                    risk_body = f"\n📉 Size scaled to ₹{risk.approved_position_size_usd:.0f} ({risk.approved_position_size_pct*100:.1f}%)"
+                else:
+                    risk_body = f"\n✅ Size: ₹{risk.approved_position_size_usd:.0f} ({risk.approved_position_size_pct*100:.1f}%)"
+
             alert = Alert(
                 level="info",
                 title=f"TRUE SIGNAL — {signal.asset} {signal.action.value if signal.action else ''}",
@@ -100,15 +119,16 @@ class AlertRouter:
                     f"Confidence: {signal.confidence:.0f}%\n"
                     f"Regime: {signal.regime}\n"
                     f"Reason: {signal.reason[:200]}"
+                    f"{risk_body}"
                 ),
                 asset=signal.asset,
                 trade_id=signal.request_id,
             )
-            if _is_market_live(signal.asset):
-                # Market open — fire all channels including Telegram
+            if _is_market_live(signal.asset) and capital_ok:
+                # Market open + capital available — fire all channels including Telegram
                 await self._broadcast(alert)
             else:
-                # Market closed — console only, suppress Telegram
+                # Market closed or capital rejected — console only
                 await asyncio.gather(
                     *[a.send(alert) for a in self._alerters if isinstance(a, ConsoleAlerter)],
                     return_exceptions=True,
