@@ -286,6 +286,38 @@ async def run_consensus_cycle(asset: str, timeframe: str, candle_limit: int, exe
     return signal_dict
 
 
+def _ist_now():
+    """Return current time in IST (UTC+5:30) without an external library."""
+    from datetime import datetime, timezone, timedelta
+    return datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5, minutes=30)))
+
+
+_MCX_KEYWORDS = frozenset({
+    "GOLD", "SILVER", "CRUDEOIL", "NATURALGAS", "COPPER", "ZINC", "LEAD",
+    "NICKEL", "ALUMINIUM", "MENTHAOIL", "KAPAS", "COTTON", "CARDAMOM",
+    "GOLDM", "GOLDMINI", "GOLDGUINEA", "GOLDPETAL", "GOLDTEN",
+    "SILVERM", "SILVERMIC", "CRUDEOILM", "NATGASMINI",
+})
+
+
+def _is_asset_live(asset: str) -> bool:
+    """
+    Return True if the asset's exchange is currently open for trading.
+    - NSE equity / F&O / indices: Mon–Fri 09:15–15:30 IST
+    - MCX commodities:            Mon–Fri 09:00–23:30 IST
+    """
+    from datetime import time as _time
+    now = _ist_now()
+    if now.weekday() >= 5:          # Saturday=5, Sunday=6
+        return False
+    t = now.time()
+    # is_mcx requires scrip_master loaded; fall back to keyword set if not
+    is_mcx = scrip_master.is_mcx(asset) or asset.upper() in _MCX_KEYWORDS
+    if is_mcx:
+        return _time(9, 0) <= t <= _time(23, 30)
+    return _time(9, 15) <= t <= _time(15, 30)
+
+
 async def live_suggestions_loop():
     """Rotate through the full tradeable universe or a fixed watchlist, running consensus on each symbol."""
     if not settings.enable_live_suggestions:
@@ -302,8 +334,15 @@ async def live_suggestions_loop():
         )
         while True:
             batch = market_scanner.next_batch(settings.scan_batch_size)
-            log.info("Scanning batch [%d/%d]: %s", market_scanner.pointer, market_scanner.universe_size, ", ".join(batch))
-            for asset in batch:
+            live_batch = [a for a in batch if _is_asset_live(a)]
+            skipped = len(batch) - len(live_batch)
+            if skipped:
+                log.info("Scanning batch [%d/%d]: %d live, %d skipped (market closed)",
+                         market_scanner.pointer, market_scanner.universe_size, len(live_batch), skipped)
+            else:
+                log.info("Scanning batch [%d/%d]: %s",
+                         market_scanner.pointer, market_scanner.universe_size, ", ".join(live_batch))
+            for asset in live_batch:
                 await run_consensus_cycle(asset, timeframe="1h", candle_limit=300, execute_if_signal=settings.auto_execute_signals)
             await asyncio.sleep(settings.live_suggestions_interval_sec)
     else:
@@ -311,6 +350,8 @@ async def live_suggestions_loop():
         log.info("Watchlist scan: %d assets", len(assets))
         while True:
             for asset in assets:
+                if not _is_asset_live(asset):
+                    continue
                 await run_consensus_cycle(asset, timeframe="1h", candle_limit=300, execute_if_signal=settings.auto_execute_signals)
                 await asyncio.sleep(settings.live_suggestions_interval_sec)
 
