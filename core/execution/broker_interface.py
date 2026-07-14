@@ -639,12 +639,23 @@ class SmartOrderRouter:
         # Stop loss — mandatory. If it fails we close the position immediately
         # to avoid holding a naked position.
         sl_side = "sell" if side == "buy" else "buy"
+        # Dhan accepts STOP_LOSS_MARKET (price=0) for SELL SL orders (long exits),
+        # but rejects it for BUY SL orders (short exits) with "Price should be greater
+        # than Trigger Price". For short exits use STOP_LOSS (limit) with a 0.2%
+        # buffer above trigger so the fill is guaranteed near the trigger.
+        if sl_side == "buy":
+            sl_order_type = OrderType.STOP_LIMIT
+            sl_limit = round(risk.stop_loss_price * 1.002, 2)
+        else:
+            sl_order_type = OrderType.STOP
+            sl_limit = None
         sl = Order(
             asset=signal.asset,
             side=sl_side,
             quantity=entry.filled_qty,
-            order_type=OrderType.STOP,
+            order_type=sl_order_type,
             stop_price=risk.stop_loss_price,
+            limit_price=sl_limit,
             metadata={"type": "stop_loss", "parent": entry.id},
         )
         sl = await self._broker.submit_order(sl)

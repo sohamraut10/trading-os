@@ -160,7 +160,8 @@ class OptionsRouter:
         )
 
         # ── 5. Entry order (buy option) ──────────────────────────────────────
-        opt_exchange = "NSE_FNO"
+        # SENSEX options trade on BSE_FNO; all others (NIFTY, BANKNIFTY, stocks) on NSE_FNO.
+        opt_exchange = "BSE_FNO" if underlying == "SENSEX" else "NSE_FNO"
         itype = "OPTIDX" if underlying in _INDEX_UNDERLYINGS else "OPTSTK"
 
         entry = Order(
