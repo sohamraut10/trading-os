@@ -3,6 +3,32 @@
 export const API_URL = import.meta.env.VITE_API_URL ||
   `${window.location.protocol}//${window.location.host}${import.meta.env.VITE_API_BASE || ""}`;
 
+// MCX commodity keywords — checked as prefix so GOLDM, GOLDGUINEA, etc. match
+const _MCX_PREFIXES = [
+  "GOLD", "SILVER", "CRUDEOIL", "NATURALGAS", "NATGAS", "COPPER",
+  "ZINC", "LEAD", "NICKEL", "ALUMINIUM", "MENTHAOIL", "KAPAS",
+  "COTTON", "CARDAMOM", "STEELREBAR",
+];
+
+/**
+ * Returns true if the asset's exchange is currently open in IST.
+ * NSE equity/F&O/indices: Mon–Fri 09:15–15:30 IST
+ * MCX commodities:         Mon–Fri 09:00–23:30 IST
+ */
+export function isMarketLive(symbol) {
+  const now = new Date();
+  // Shift to IST (UTC+5:30 = +330 minutes)
+  const ist = new Date(now.getTime() + 330 * 60 * 1000);
+  const day = ist.getUTCDay(); // 0=Sun, 6=Sat
+  if (day === 0 || day === 6) return false;
+  const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  const up = symbol.toUpperCase();
+  const isMcx = _MCX_PREFIXES.some(p => up.startsWith(p));
+  return isMcx
+    ? mins >= 9 * 60 && mins <= 23 * 60 + 30      // 09:00–23:30
+    : mins >= 9 * 60 + 15 && mins <= 15 * 60 + 30; // 09:15–15:30
+}
+
 const AUTH_TOKEN = import.meta.env.VITE_API_AUTH_TOKEN || "";
 const authHeaders = () => AUTH_TOKEN ? { "X-API-Key": AUTH_TOKEN } : {};
 
