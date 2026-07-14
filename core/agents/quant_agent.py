@@ -239,19 +239,21 @@ def _quant_signal(m: QuantMetrics, is_index: bool = False, iv_rank: float = -1.0
 class QuantAgent(BaseAgent):
     name = AgentName.QUANT
     MIN_CANDLES = 60
+    MIN_CANDLES_INDEX = 30  # indices have clean daily data; fewer bars needed
 
     async def _analyze(self, ctx: MarketContext) -> AgentDecision:
-        if len(ctx.candles) < self.MIN_CANDLES:
+        is_index = ctx.asset.upper() in _INDEX_SYMBOLS
+        min_candles = self.MIN_CANDLES_INDEX if is_index else self.MIN_CANDLES
+        if len(ctx.candles) < min_candles:
             return AgentDecision(
                 agent_name=self.name,
                 signal=Signal.HOLD,
                 confidence=50.0,
-                reasoning=f"Insufficient history: need {self.MIN_CANDLES}, got {len(ctx.candles)}",
+                reasoning=f"Insufficient history: need {min_candles}, got {len(ctx.candles)}",
                 warnings=["low_data"],
             )
 
         m = compute_quant_metrics(ctx.candles)
-        is_index = ctx.asset.upper() in _INDEX_SYMBOLS
         signal, confidence, reasoning, warnings = _quant_signal(
             m, is_index=is_index, iv_rank=ctx.iv_rank
         )

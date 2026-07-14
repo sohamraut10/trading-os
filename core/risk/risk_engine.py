@@ -112,7 +112,10 @@ class RiskEngine:
             if settings.trade_mode == "options"
             else self.cfg.max_position_pct
         )
-        approved_pct = min(desired_pct, available_pct, size_cap)
+        # Hard cap on actual cash available — prevents broker rejections when
+        # portfolio.positions is stale (e.g. before position monitor next syncs).
+        cash_cap = portfolio.cash / portfolio.equity if portfolio.equity > 0 else 0.0
+        approved_pct = min(desired_pct, available_pct, size_cap, cash_cap)
         scaled_down = approved_pct < desired_pct * 0.99
 
         if approved_pct < 0.002:  # too small to be worth trading
@@ -192,9 +195,12 @@ class RiskEngine:
 
         # In options mode, current_price is the underlying spot (e.g. ₹24500 for NIFTY).
         # Computing sl/tp as spot × fraction produces meaningless ₹23,000-level prices
-        # for what is actually a ₹150 premium. Skip spot-based pricing — the options
-        # router enforces SL/TP on the premium directly.
-        if settings.trade_mode == "options":
+        # for what is actually a ₹150 premium. Skip spot-based pricing for non-MCX assets
+        # — the options router enforces SL/TP on the premium directly.
+        # MCX commodities always route as futures (not options) and always need spot-based SL.
+        from core.data.instruments import scrip_master
+        is_options_routed = settings.trade_mode == "options" and not scrip_master.is_mcx(signal.asset)
+        if is_options_routed:
             sl_price = 0.0
             tp_price = 0.0
             dynamic_sl_pct = settings.options_sl_pct
@@ -211,9 +217,9 @@ class RiskEngine:
                 tp_price = current_price * (1 - tp_pct)
 
         # ── Gate 5: Minimum Risk/Reward ─────────────────────────────────────
-        # Enforced for equity only — options router handles its own 1:2 R:R via
-        # the premium TP order placed after entry.
-        if settings.trade_mode != "options":
+        # Enforced for equity and MCX futures — options router handles its own
+        # 1:2 R:R via the premium TP order placed after entry.
+        if not is_options_routed:
             rr = tp_pct / sl_pct if sl_pct > 0 else 0
             if rr < settings.min_risk_reward:
                 return RiskCheckResult(

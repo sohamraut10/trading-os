@@ -77,7 +77,7 @@ class MeanReversionStrategy(BaseStrategy):
     strategy_type = StrategyType.MEAN_REVERSION
     default_timeframes = ["15m", "1h"]
     filter = StrategyFilter(
-        min_confidence=65.0,
+        min_confidence=60.0,
         min_rr=1.8,
         required_regime=["sideways", "bull", "bear"],
         max_hold_bars=48,

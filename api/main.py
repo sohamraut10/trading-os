@@ -723,6 +723,10 @@ async def close_position(req: ClosePositionRequest, _: None = Depends(require_ap
     broker_error = filled_order.metadata.get("error")
     if not broker_error:
         state.portfolio.open_trades = max(0, state.portfolio.open_trades - 1)
+        # Return the tracked position value to available cash
+        reclaimed = state.portfolio.positions.pop(req.asset, 0.0)
+        if reclaimed > 0:
+            state.portfolio.cash = min(state.portfolio.equity, state.portfolio.cash + reclaimed)
         asyncio.create_task(state.db.snapshot_portfolio(state.portfolio))
     return {
         "status": "closed" if not broker_error else "failed",

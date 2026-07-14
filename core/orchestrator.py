@@ -188,17 +188,25 @@ class Orchestrator:
                 self._data.get_current_price(self.asset),
             )
 
-            # Fallback: brokers like Dhan limit intraday history to ~5 trading
-            # days (~31 1h bars for NSE). When that's below what agents need,
-            # retry with daily candles so Technical/Quant can still run.
+            # Candle quality upgrade:
+            # - Index instruments: ALWAYS use daily bars regardless of intraday
+            #   count. Intraday hourly bars for NIFTY/BANKNIFTY span only 5 days
+            #   and produce a noisy z-score; daily bars give a clean 100-day view
+            #   that Quant can score at 90%+ confidence.
+            # - Other assets: fall back to daily only when intraday < 60 bars.
+            _INDEX_SYMBOLS_ORCH = {"NIFTY", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY", "SENSEX"}
             _MIN_CANDLES_NEEDED = 60
-            if len(candles) < _MIN_CANDLES_NEEDED and self.timeframe != "1d":
+            _is_index = self.asset.upper() in _INDEX_SYMBOLS_ORCH
+            _needs_daily = (_is_index and self.timeframe != "1d") or \
+                           (len(candles) < _MIN_CANDLES_NEEDED and self.timeframe != "1d")
+            if _needs_daily:
                 try:
                     daily = await self._data.get_candles(self.asset, "1d", self._candle_limit)
-                    if len(daily) >= _MIN_CANDLES_NEEDED:
+                    if len(daily) >= (_MIN_CANDLES_NEEDED if not _is_index else 30):
                         log.info(
-                            "%s: only %d %s candles — falling back to %d daily bars",
-                            self.asset, len(candles), self.timeframe, len(daily),
+                            "%s: using %d daily bars (%s)",
+                            self.asset, len(daily),
+                            "index — daily preferred" if _is_index else f"only {len(candles)} {self.timeframe} candles",
                         )
                         candles = daily
                 except Exception:
@@ -352,6 +360,14 @@ class Orchestrator:
             # Always computed (even for HOLD/rejected signals) so callers can see
             # what would have happened; execution itself stays gated below.
             executed = False
+            # Determine options routing once — used by execution, logging, and learning loop.
+            # MCX commodities always route as futures even in options mode.
+            from core.data.instruments import scrip_master
+            use_options = (
+                settings.trade_mode == "options"
+                and hasattr(self._router._broker, "_dhan")
+                and not scrip_master.is_mcx(self.asset)
+            )
             risk_result = self._risk.check(signal, self._portfolio, price)
             if signal.final_decision and strat_ok and not risk_result.is_tradeable():
                 log.info("RISK BLOCK — %s %s | status=%s | reasons=%s",
@@ -359,13 +375,6 @@ class Orchestrator:
                          risk_result.rejection_reasons)
 
             if signal.final_decision and strat_ok:
-                from core.execution.broker_interface import DhanBroker
-                from core.data.instruments import scrip_master
-                use_options = (
-                    settings.trade_mode == "options"
-                    and hasattr(self._router._broker, "_dhan")
-                    and not scrip_master.is_mcx(self.asset)
-                )
 
                 # Emit SanitizationApplied — show premium-based SL/TP for options
                 san_payload = {
@@ -427,6 +436,12 @@ class Orchestrator:
                         else:
                             await self._router.execute_bracket(signal, risk_result, price)
                         self._portfolio.open_trades += 1
+                        # Update in-memory exposure immediately so the risk engine
+                        # blocks over-allocation before the position monitor re-syncs.
+                        self._portfolio.positions[self.asset] = risk_result.approved_position_size_usd
+                        self._portfolio.cash = max(
+                            0.0, self._portfolio.cash - risk_result.approved_position_size_usd
+                        )
                         executed = True
                         log.info("ORDER PLACED — %s %s ₹%.0f @ %.2f", self.asset, signal.action, risk_result.approved_position_size_usd, price)
                     except Exception as exc:

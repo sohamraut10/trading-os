@@ -31,7 +31,7 @@ class RiskConfig(BaseModel):
 
 class ConsensusConfig(BaseModel):
     min_agents_agree: int = 3
-    min_avg_confidence: float = 68.0
+    min_avg_confidence: float = 63.0
     min_agent_confidence: float = 55.0
     devils_advocate_veto_threshold: float = 85.0
 

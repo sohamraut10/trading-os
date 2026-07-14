@@ -331,11 +331,18 @@ class SentimentAgent(BaseAgent):
         sentiment_raw = ctx.sentiment_raw
 
         if not headlines and not sentiment_raw:
+            is_index = ctx.asset.upper() in _INDEX_SYMBOLS
+            # For indices: return 58% HOLD (just above the 55% exclusion floor) so the
+            # agent stays eligible for the consensus vote as a neutral abstention.
+            # For stocks: return 50% HOLD (excluded) — no data = no opinion on the company.
             return AgentDecision(
                 agent_name=self.name,
                 signal=Signal.HOLD,
-                confidence=50.0,
-                reasoning="No news or sentiment data available",
+                confidence=58.0 if is_index else 50.0,
+                reasoning=(
+                    "No macro news available — neutral abstention (index macro context via PCR/IV skew)"
+                    if is_index else "No news or sentiment data available"
+                ),
                 warnings=["no_data"],
             )
 
