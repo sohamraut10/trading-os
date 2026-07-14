@@ -106,7 +106,13 @@ class RiskEngine:
         # ── Gate 3: Position Sizing ─────────────────────────────────────────
         desired_pct = signal.suggested_position_size_pct
         available_pct = self.cfg.max_portfolio_exposure - portfolio.total_exposure_pct
-        approved_pct = min(desired_pct, available_pct, self.cfg.max_position_pct)
+        # Options: premium = max loss (defined-risk), so a higher per-trade cap is safe.
+        size_cap = (
+            settings.options_max_position_pct
+            if settings.trade_mode == "options"
+            else self.cfg.max_position_pct
+        )
+        approved_pct = min(desired_pct, available_pct, size_cap)
         scaled_down = approved_pct < desired_pct * 0.99
 
         if approved_pct < 0.002:  # too small to be worth trading
@@ -127,9 +133,17 @@ class RiskEngine:
         # For whole-share markets (NSE/BSE), the minimum order is 1 share.
         # If the approved position budget can't buy even 1 share, scale up to
         # 1 share — but only if 1 share ≤ 40% of available cash.
-        # Determine if the asset is an equity (which typically requires whole shares)
-        # We assume assets with '/' or containing 'USD'/'USDT' are crypto/forex pairs
-        is_fractional_asset = "/" in signal.asset or "USD" in signal.asset.upper()
+        # Skip this check for:
+        #   - Crypto/forex pairs (fractional by nature)
+        #   - Index instruments (NIFTY/BANKNIFTY etc.) — never bought as shares,
+        #     always traded via options or futures lots priced off premium, not spot
+        #   - Options trade mode — actual cost is premium × lots, not the underlying price
+        _INDEX_UNDERLYINGS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "NIFTYNXT50", "MIDCPNIFTY", "SENSEX"}
+        is_fractional_asset = (
+            "/" in signal.asset or "USD" in signal.asset.upper()
+            or signal.asset.upper() in _INDEX_UNDERLYINGS
+            or settings.trade_mode == "options"
+        )
         if not is_fractional_asset and current_price > 0 and position_usd < current_price:
             one_share_pct = current_price / portfolio.equity if portfolio.equity > 0 else 1.0
             if one_share_pct > 0.40:
@@ -176,17 +190,45 @@ class RiskEngine:
                 f"TP floor applied: {raw_tp * 100:.2f}% -> {min_tp * 100:.2f}% (R:R {self.cfg.default_rr_ratio}x)"
             )
 
-        if signal.action == Signal.BUY:
-            sl_price = current_price * (1 - sl_pct)
-            tp_price = current_price * (1 + tp_pct)
+        # In options mode, current_price is the underlying spot (e.g. ₹24500 for NIFTY).
+        # Computing sl/tp as spot × fraction produces meaningless ₹23,000-level prices
+        # for what is actually a ₹150 premium. Skip spot-based pricing — the options
+        # router enforces SL/TP on the premium directly.
+        if settings.trade_mode == "options":
+            sl_price = 0.0
+            tp_price = 0.0
+            dynamic_sl_pct = settings.options_sl_pct
+            sanitization_diff.append(
+                f"Options mode: SL={dynamic_sl_pct*100:.0f}% of premium (dynamic by DTE), "
+                f"TP=2× risk ({dynamic_sl_pct*200:.0f}% gain) — 1:2 R:R on premium"
+            )
         else:
-            sl_price = current_price * (1 + sl_pct)
-            tp_price = current_price * (1 - tp_pct)
+            if signal.action == Signal.BUY:
+                sl_price = current_price * (1 - sl_pct)
+                tp_price = current_price * (1 + tp_pct)
+            else:
+                sl_price = current_price * (1 + sl_pct)
+                tp_price = current_price * (1 - tp_pct)
 
         # ── Gate 5: Minimum Risk/Reward ─────────────────────────────────────
-        rr = tp_pct / sl_pct if sl_pct > 0 else 0
-        if rr < 1.5:
-            warnings.append(f"Low R:R ratio {rr:.2f} — below recommended 1.5")
+        # Enforced for equity only — options router handles its own 1:2 R:R via
+        # the premium TP order placed after entry.
+        if settings.trade_mode != "options":
+            rr = tp_pct / sl_pct if sl_pct > 0 else 0
+            if rr < settings.min_risk_reward:
+                return RiskCheckResult(
+                    status=RiskStatus.REJECTED,
+                    approved_position_size_pct=0.0,
+                    approved_position_size_usd=0.0,
+                    stop_loss_price=0.0,
+                    take_profit_price=0.0,
+                    rejection_reasons=[
+                        f"R:R {rr:.2f} below minimum {settings.min_risk_reward:.1f} — "
+                        f"entry price would not support a {settings.min_risk_reward:.0f}:1 reward"
+                    ],
+                    warnings=warnings,
+                    sanitization_diff=sanitization_diff,
+                )
 
         status = RiskStatus.SCALED_DOWN if scaled_down else RiskStatus.APPROVED
 

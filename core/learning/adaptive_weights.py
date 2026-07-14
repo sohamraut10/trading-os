@@ -99,6 +99,8 @@ class AdaptiveWeightManager:
         signal: str,
         confidence: float,
         trade_id: str,
+        asset: str = "",
+        trade_type: str = "equity",
     ) -> None:
         if agent_name not in self._records:
             return
@@ -106,6 +108,8 @@ class AdaptiveWeightManager:
             "signal": signal,
             "confidence": confidence,
             "trade_id": trade_id,
+            "asset": asset,
+            "trade_type": trade_type,  # "equity" | "options" — for calibration filtering
             "timestamp": time.time(),
             "outcome": None,   # filled in by resolve_trade
         })
@@ -126,6 +130,31 @@ class AdaptiveWeightManager:
         if self._trade_count % self.RECALIBRATION_INTERVAL == 0:
             self._recalibrate_weights()
             self._save()
+
+    def resolve_trade_by_asset(self, asset: str, pnl_pct: float) -> None:
+        """
+        Called when a position closes (from position monitor or broker callback).
+        Resolves the most recent unresolved prediction for the given asset.
+
+        For options: pnl_pct is the option premium return (not underlying spot move).
+        Directional correctness is still: BUY → pnl > 0, SELL signal (PE) → pnl > 0.
+        """
+        outcome = 1 if pnl_pct > 0 else -1
+        resolved_any = False
+        for record in self._records.values():
+            # Find most recent unresolved prediction for this asset
+            for pred in reversed(record.predictions):
+                if pred.get("asset") == asset and pred.get("outcome") is None:
+                    pred["outcome"] = outcome
+                    pred["price_return"] = pnl_pct
+                    resolved_any = True
+                    break
+
+        if resolved_any:
+            self._trade_count += 1
+            if self._trade_count % self.RECALIBRATION_INTERVAL == 0:
+                self._recalibrate_weights()
+                self._save()
 
     def get_weights(self) -> dict[str, float]:
         return dict(self._current_weights)

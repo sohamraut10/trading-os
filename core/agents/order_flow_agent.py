@@ -177,7 +177,34 @@ def compute_order_flow_metrics(ctx: MarketContext) -> OrderFlowMetrics:
     )
 
 
-def _of_signal(m: OrderFlowMetrics, price: float) -> tuple[Signal, float, list[str]]:
+def _pcr_signal(pcr: float) -> tuple[float, float, str | None]:
+    """
+    Put-Call Ratio by open interest → directional bias for index instruments.
+    Returns (bull_pts, bear_pts, reason).
+
+    PCR interpretation:
+      < 0.7  → call-heavy OI, complacency → bearish (smart money shorts calls)
+      0.7–1.0 → slight call bias → mild bullish
+      1.0–1.3 → neutral to mild bearish
+      > 1.3  → put-heavy OI, hedging → bearish sentiment
+      > 2.0  → extreme fear → contrarian bullish (over-hedged)
+    """
+    if pcr < 0:
+        return 0.0, 0.0, None
+    if pcr > 2.0:
+        return 15.0, 0.0, f"Extreme PCR {pcr:.2f} — contrarian bullish (hedging peak)"
+    if pcr > 1.3:
+        return 0.0, 15.0, f"PCR {pcr:.2f} — put-heavy OI, bearish hedging dominates"
+    if pcr > 1.0:
+        return 0.0, 8.0, f"PCR {pcr:.2f} — mild bearish OI bias"
+    if pcr < 0.7:
+        return 0.0, 10.0, f"PCR {pcr:.2f} — call-heavy, complacency (bearish setup)"
+    if pcr < 1.0:
+        return 8.0, 0.0, f"PCR {pcr:.2f} — mild bullish OI bias"
+    return 0.0, 0.0, f"PCR {pcr:.2f} — neutral"
+
+
+def _of_signal(m: OrderFlowMetrics, price: float, pcr: float = -1.0, max_pain: float = 0.0) -> tuple[Signal, float, list[str]]:
     bull_pts = 0.0
     bear_pts = 0.0
     reasons = []
@@ -219,6 +246,25 @@ def _of_signal(m: OrderFlowMetrics, price: float) -> tuple[Signal, float, list[s
             bear_pts += 15
         reasons.append(f"Institutional-size order detected — {dominant} bias")
 
+    # PCR signal (index instruments only — populated in macro_context)
+    pcr_bull, pcr_bear, pcr_reason = _pcr_signal(pcr)
+    if pcr_reason:
+        bull_pts += pcr_bull
+        bear_pts += pcr_bear
+        reasons.append(pcr_reason)
+
+    # Max pain — strike where options sellers suffer least; index gravitates here at expiry
+    if max_pain > 0 and price > 0:
+        dist_pct = (price - max_pain) / price * 100
+        if abs(dist_pct) < 0.5:
+            reasons.append(f"Price at max pain ₹{max_pain:.0f} — expect pinning, low directional edge")
+        elif dist_pct > 2.0:
+            bear_pts += 8
+            reasons.append(f"Price {dist_pct:.1f}% above max pain ₹{max_pain:.0f} — gravitational pull lower")
+        elif dist_pct < -2.0:
+            bull_pts += 8
+            reasons.append(f"Price {abs(dist_pct):.1f}% below max pain ₹{max_pain:.0f} — gravitational pull higher")
+
     # Liquidity void = fast move expected
     warnings = []
     if m.liquidity_void_above and bull_pts > bear_pts:
@@ -258,21 +304,29 @@ class OrderFlowAgent(BaseAgent):
             )
 
         m = compute_order_flow_metrics(ctx)
-        signal, confidence, reasons = _of_signal(m, ctx.current_price)
+        pcr      = float(ctx.macro_context.get("pcr", -1.0) or -1.0)
+        max_pain = float(ctx.macro_context.get("max_pain", 0.0) or 0.0)
+        signal, confidence, reasons = _of_signal(m, ctx.current_price, pcr=pcr, max_pain=max_pain)
+
+        indicators = {
+            "bid_ask_imbalance": round(m.bid_ask_imbalance, 4),
+            "depth_ratio": round(m.depth_ratio, 3),
+            "delta_trend": m.cumulative_delta_trend,
+            "support_dist_pct": round(m.support_distance_pct, 3),
+            "resistance_dist_pct": round(m.resistance_distance_pct, 3),
+            "poc": round(m.volume_profile_poc, 4),
+            "large_order": m.large_order_detected,
+        }
+        if pcr >= 0:
+            indicators["pcr"] = round(pcr, 3)
+        if max_pain > 0:
+            indicators["max_pain"] = round(max_pain, 1)
 
         return AgentDecision(
             agent_name=self.name,
             signal=signal,
             confidence=confidence,
             reasoning=" | ".join(reasons),
-            indicators={
-                "bid_ask_imbalance": round(m.bid_ask_imbalance, 4),
-                "depth_ratio": round(m.depth_ratio, 3),
-                "delta_trend": m.cumulative_delta_trend,
-                "support_dist_pct": round(m.support_distance_pct, 3),
-                "resistance_dist_pct": round(m.resistance_distance_pct, 3),
-                "poc": round(m.volume_profile_poc, 4),
-                "large_order": m.large_order_detected,
-            },
+            indicators=indicators,
             warnings=["liquidity_void"] if (m.liquidity_void_above or m.liquidity_void_below) else [],
         )

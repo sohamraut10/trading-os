@@ -334,18 +334,27 @@ class DhanBroker(BrokerAdapter):
         """
         Return (security_id, exchange, instrument_type) for a symbol.
         Uses the live scrip master; falls back to passing the symbol as-is.
+        Also handles full trading symbols like "CRUDEOIL-20Jul2026-FUT" by
+        stripping the futures suffix and resolving the base symbol.
         """
         if symbol.lstrip("-").isdigit():
             return symbol, self._default_exchange, "EQUITY"
         inst = scrip_master.resolve(symbol)
         if inst:
             return inst.security_id, inst.exchange, inst.instrument_type
+        # Strip futures/options suffix (e.g. "CRUDEOIL-20Jul2026-FUT" → "CRUDEOIL")
+        base = symbol.split("-")[0]
+        if base != symbol:
+            inst = scrip_master.resolve(base)
+            if inst:
+                log.debug("Resolved %s via base symbol %s", symbol, base)
+                return inst.security_id, inst.exchange, inst.instrument_type
         log.warning("Unknown symbol %s — passing as-is to Dhan", symbol)
         return symbol, self._default_exchange, "EQUITY"
 
     def _product_type_for(self, instrument_type: str) -> str:
-        """MCX futures use INTRADAY product type; equities use configured default."""
-        if instrument_type == "FUTCOM":
+        """MCX futures and options use INTRADAY; equities use configured default."""
+        if instrument_type in ("FUTCOM", "OPTIDX", "OPTSTK", "FUTIDX"):
             return "INTRADAY"
         return self._product_type
 
@@ -411,6 +420,56 @@ class DhanBroker(BrokerAdapter):
         except Exception:
             return False
 
+    async def get_open_orders(self) -> list[dict]:
+        """Return all pending/transit orders from Dhan for today."""
+        loop = asyncio.get_event_loop()
+        try:
+            raw = await loop.run_in_executor(None, self._dhan.get_order_list)
+            rows = raw.get("data", []) if isinstance(raw, dict) else []
+            if not isinstance(rows, list):
+                return []
+            open_statuses = {"TRANSIT", "PENDING", "PART_TRADED"}
+            return [r for r in rows if r.get("orderStatus", "") in open_statuses]
+        except Exception as exc:
+            log.warning("get_open_orders failed: %s", exc)
+            return []
+
+    async def get_trade_history(self, days: int = 30) -> list[dict]:
+        """Return executed trades from Dhan (today's trade book + historical)."""
+        from datetime import date, timedelta
+        loop = asyncio.get_event_loop()
+        today = date.today()
+        from_date = (today - timedelta(days=days)).strftime("%Y-%m-%d")
+        to_date = today.strftime("%Y-%m-%d")
+        trades: list[dict] = []
+
+        try:
+            raw = await loop.run_in_executor(None, self._dhan.get_trade_book)
+            rows = (raw.get("data", []) if isinstance(raw, dict) else []) or []
+            if isinstance(rows, list):
+                trades.extend(rows)
+        except Exception as exc:
+            log.warning("get_trade_book failed: %s", exc)
+
+        try:
+            raw = await loop.run_in_executor(
+                None, lambda: self._dhan.get_trade_history(from_date, to_date, 0)
+            )
+            rows = (raw.get("data", []) if isinstance(raw, dict) else []) or []
+            if isinstance(rows, list):
+                trades.extend(rows)
+        except Exception as exc:
+            log.warning("get_trade_history failed: %s", exc)
+
+        seen: set[str] = set()
+        result: list[dict] = []
+        for t in trades:
+            tid = str(t.get("tradeId") or t.get("orderId") or id(t))
+            if tid not in seen:
+                seen.add(tid)
+                result.append(t)
+        return sorted(result, key=lambda x: x.get("createTime", ""), reverse=True)
+
     async def get_order_status(self, order_id: str) -> Order:
         loop = asyncio.get_event_loop()
         order = Order(broker_order_id=order_id)
@@ -422,7 +481,11 @@ class DhanBroker(BrokerAdapter):
             order.status = self._STATUS_MAP.get(data.get("orderStatus", ""), OrderStatus.SUBMITTED)
             order.filled_qty = float(data.get("filledQty", 0))
             order.avg_fill_price = float(data.get("price", 0))
-            order.asset = data.get("tradingSymbol", "")
+            # Store the full trading symbol in metadata; keep order.asset as the
+            # user-facing symbol so downstream resubmits resolve correctly.
+            order.metadata["trading_symbol"] = data.get("tradingSymbol", "")
+            if not order.asset:
+                order.asset = data.get("tradingSymbol", "")
         except Exception as e:
             order.metadata["error"] = str(e)
         return order
@@ -438,12 +501,26 @@ class DhanBroker(BrokerAdapter):
                 symbol = p.get("tradingSymbol", p.get("securityId", ""))
                 net_qty = float(p.get("netQty", 0))
                 if net_qty != 0:
+                    avg = float(p.get("buyAvg", p.get("costPrice", 0)) or 0)
+                    # Dhan positions do not include lastTradedPrice; use their
+                    # pre-calculated unrealizedProfit and derive LTP from it.
+                    unrealized = float(p.get("unrealizedProfit", 0) or 0)
+                    realized   = float(p.get("realizedProfit",   0) or 0)
+                    ltp = round(avg + unrealized / net_qty, 2) if avg and net_qty else avg
+                    pnl_pct = round(unrealized / (avg * abs(net_qty)) * 100, 2) if avg and net_qty else 0.0
                     result[symbol] = {
                         "qty": net_qty,
-                        "value": net_qty * float(p.get("lastTradedPrice", 0)),
-                        "avg_price": float(p.get("buyAvg", p.get("costPrice", 0))),
+                        "avg_price": avg,
+                        "ltp": ltp,
+                        "value": round(net_qty * ltp, 2) if ltp else round(net_qty * avg, 2),
+                        "unrealized_pnl": round(unrealized, 2),
+                        "unrealized_pnl_pct": pnl_pct,
+                        "realized_pnl": round(realized, 2),
                         "security_id": str(p.get("securityId", "")),
                         "exchange": p.get("exchangeSegment", self._default_exchange),
+                        "product": p.get("productType", "CNC"),
+                        "day_buy_qty": float(p.get("dayBuyQty", 0) or 0),
+                        "day_sell_qty": float(p.get("daySellQty", 0) or 0),
                     }
             return result
         except Exception:
@@ -559,7 +636,8 @@ class SmartOrderRouter:
 
         fill_price = entry.avg_fill_price or current_price
 
-        # Stop loss order
+        # Stop loss — mandatory. If it fails we close the position immediately
+        # to avoid holding a naked position.
         sl_side = "sell" if side == "buy" else "buy"
         sl = Order(
             asset=signal.asset,
@@ -570,8 +648,16 @@ class SmartOrderRouter:
             metadata={"type": "stop_loss", "parent": entry.id},
         )
         sl = await self._broker.submit_order(sl)
+        if sl.status == OrderStatus.REJECTED:
+            log.error("SL order rejected for %s — closing position to avoid naked exposure", signal.asset)
+            try:
+                close = Order(asset=signal.asset, side=sl_side, quantity=entry.filled_qty, order_type=OrderType.MARKET)
+                await self._broker.submit_order(close)
+            except Exception as close_err:
+                log.error("Emergency close also failed for %s: %s", signal.asset, close_err)
+            raise RuntimeError(f"Stop-loss order rejected for {signal.asset} — position closed")
 
-        # Take profit order
+        # Take profit order (best-effort, not mandatory)
         tp = Order(
             asset=signal.asset,
             side=sl_side,
@@ -581,6 +667,8 @@ class SmartOrderRouter:
             metadata={"type": "take_profit", "parent": entry.id},
         )
         tp = await self._broker.submit_order(tp)
+        if tp.status == OrderStatus.REJECTED:
+            log.warning("TP order rejected for %s — SL is active, position not closed", signal.asset)
 
         return BracketOrder(
             entry=entry, stop_loss=sl, take_profit=tp, signal_id=signal.request_id

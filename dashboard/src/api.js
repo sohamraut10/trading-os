@@ -3,6 +3,9 @@
 export const API_URL = import.meta.env.VITE_API_URL ||
   `${window.location.protocol}//${window.location.host}${import.meta.env.VITE_API_BASE || ""}`;
 
+const AUTH_TOKEN = import.meta.env.VITE_API_AUTH_TOKEN || "";
+const authHeaders = () => AUTH_TOKEN ? { "X-API-Key": AUTH_TOKEN } : {};
+
 export async function fetchPortfolio() {
   const res = await fetch(`${API_URL}/portfolio`);
   if (!res.ok) throw new Error("Failed to fetch portfolio");
@@ -80,4 +83,27 @@ export async function fetchSystem() {
   const res = await fetch(`${API_URL}/system`);
   if (!res.ok) return { ram_used_gb: 0, ram_total_gb: 8, ram_pct: 0, cpu_pct: 0, disk_pct: 0 };
   return res.json();
+}
+
+export async function fetchPositions() {
+  const res = await fetch(`${API_URL}/positions`);
+  if (!res.ok) return {};
+  return res.json();
+}
+
+export async function fetchTradeHistory(days = 30) {
+  const res = await fetch(`${API_URL}/trades/history?days=${days}`);
+  if (!res.ok) return { trades: [] };
+  return res.json();
+}
+
+export async function closePosition(asset) {
+  const res = await fetch(`${API_URL}/portfolio/close`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ asset }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+  return body;
 }
