@@ -135,6 +135,13 @@ class TradingMetrics:
         # Regime gauge (mapped to int: bull=1, bear=-1, sideways=0, volatile=2)
         self.regime = Gauge("trading_regime", "Current market regime encoded as integer")
 
+        # Host system resource gauges (populated via update_system)
+        self.cpu_pct   = Gauge("trading_host_cpu_pct",      "Host CPU usage percent")
+        self.ram_pct   = Gauge("trading_host_ram_pct",      "Host RAM usage percent")
+        self.disk_pct  = Gauge("trading_host_disk_pct",     "Host disk usage percent")
+        self.ram_avail = Gauge("trading_host_ram_avail_gb", "Host RAM available in GB")
+        self.ram_total = Gauge("trading_host_ram_total_gb", "Host RAM total in GB")
+
         self._start_time = time.time()
 
     def update_cycle(self, asset: str, cycle_ms: float, signal_dict: dict) -> None:
@@ -161,6 +168,20 @@ class TradingMetrics:
             name = agent.get("name", "")
             if name in self._agent_confidence:
                 self._agent_confidence[name].set(agent.get("confidence", 0))
+
+    def update_system(self) -> None:
+        try:
+            import psutil
+            mem = psutil.virtual_memory()
+            cpu = psutil.cpu_percent(interval=None)
+            disk = psutil.disk_usage("/")
+            self.cpu_pct.set(cpu)
+            self.ram_pct.set(mem.percent)
+            self.disk_pct.set(disk.percent)
+            self.ram_avail.set((mem.total - mem.used) / 1e9)
+            self.ram_total.set(mem.total / 1e9)
+        except Exception:
+            pass
 
     def update_portfolio(self, equity: float, exposure: float, daily_pnl: float,
                          open_trades: int, consecutive_losses: int, circuit_breaker: bool) -> None:
@@ -191,6 +212,8 @@ class TradingMetrics:
         for g in self._agent_confidence.values():
             parts.append(g.render())
         for g in self._asset_confidence.values():
+            parts.append(g.render())
+        for g in (self.cpu_pct, self.ram_pct, self.disk_pct, self.ram_avail, self.ram_total):
             parts.append(g.render())
         return "".join(parts)
 

@@ -1,4 +1,36 @@
-const API_URL = `${window.location.protocol}//${window.location.host}`;
+// VITE_API_URL: explicit base URL baked in at build time (e.g. https://api.mu3en.diy).
+// Falls back to same-host for local dev where Vite proxy handles /analyze etc.
+export const API_URL = import.meta.env.VITE_API_URL ||
+  `${window.location.protocol}//${window.location.host}${import.meta.env.VITE_API_BASE || ""}`;
+
+// MCX commodity keywords — checked as prefix so GOLDM, GOLDGUINEA, etc. match
+const _MCX_PREFIXES = [
+  "GOLD", "SILVER", "CRUDEOIL", "NATURALGAS", "NATGAS", "COPPER",
+  "ZINC", "LEAD", "NICKEL", "ALUMINIUM", "MENTHAOIL", "KAPAS",
+  "COTTON", "CARDAMOM", "STEELREBAR",
+];
+
+/**
+ * Returns true if the asset's exchange is currently open in IST.
+ * NSE equity/F&O/indices: Mon–Fri 09:15–15:30 IST
+ * MCX commodities:         Mon–Fri 09:00–23:30 IST
+ */
+export function isMarketLive(symbol) {
+  const now = new Date();
+  // Shift to IST (UTC+5:30 = +330 minutes)
+  const ist = new Date(now.getTime() + 330 * 60 * 1000);
+  const day = ist.getUTCDay(); // 0=Sun, 6=Sat
+  if (day === 0 || day === 6) return false;
+  const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  const up = symbol.toUpperCase();
+  const isMcx = _MCX_PREFIXES.some(p => up.startsWith(p));
+  return isMcx
+    ? mins >= 9 * 60 && mins <= 23 * 60 + 30      // 09:00–23:30
+    : mins >= 9 * 60 + 15 && mins <= 15 * 60 + 30; // 09:15–15:30
+}
+
+const AUTH_TOKEN = import.meta.env.VITE_API_AUTH_TOKEN || "";
+const authHeaders = () => AUTH_TOKEN ? { "X-API-Key": AUTH_TOKEN } : {};
 
 export async function fetchPortfolio() {
   const res = await fetch(`${API_URL}/portfolio`);
@@ -28,8 +60,76 @@ export async function fetchCycleEvents(cycleId) {
   return res.json();
 }
 
-export async function fetchCandles(asset) {
-  const res = await fetch(`${API_URL}/candles?asset=${asset}&timeframe=1h&limit=100`);
-  if (!res.ok) throw new Error("Failed to fetch candles");
+export async function fetchCandles(asset, source = "", timeframe = "1h", limit = 100) {
+  const params = new URLSearchParams({ asset, timeframe, limit });
+  if (source) params.set("source", source);
+  const res = await fetch(`${API_URL}/candles?${params}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || `HTTP ${res.status}`);
+  }
   return res.json();
+}
+
+export async function fetchPairSuggestions() {
+  const res = await fetch(`${API_URL}/pairs/suggest`);
+  if (!res.ok) return { pairs: [], broker: "" };
+  return res.json();
+}
+
+export async function searchPairs(query) {
+  const res = await fetch(`${API_URL}/pairs/search?q=${encodeURIComponent(query)}`);
+  if (!res.ok) return { pairs: [], broker: "" };
+  return res.json();
+}
+
+export async function fetchOptionExpiries(symbol) {
+  const res = await fetch(`${API_URL}/options/expiries?symbol=${encodeURIComponent(symbol)}`);
+  if (!res.ok) return { expiries: [] };
+  return res.json();
+}
+
+export async function fetchOptionChain(symbol, expiry) {
+  const res = await fetch(`${API_URL}/options/chain?symbol=${encodeURIComponent(symbol)}&expiry=${encodeURIComponent(expiry)}`);
+  if (!res.ok) return { spot: 0, strikes: [] };
+  return res.json();
+}
+
+export async function analyzeAsset(asset, timeframe = "1h", candle_limit = 100) {
+  const res = await fetch(`${API_URL}/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ asset, timeframe, candle_limit, execute_if_signal: false }),
+  });
+  if (!res.ok) throw new Error("Analysis failed");
+  return res.json();
+}
+
+export async function fetchSystem() {
+  const res = await fetch(`${API_URL}/system`);
+  if (!res.ok) return { ram_used_gb: 0, ram_total_gb: 8, ram_pct: 0, cpu_pct: 0, disk_pct: 0 };
+  return res.json();
+}
+
+export async function fetchPositions() {
+  const res = await fetch(`${API_URL}/positions`);
+  if (!res.ok) return {};
+  return res.json();
+}
+
+export async function fetchTradeHistory(days = 30) {
+  const res = await fetch(`${API_URL}/trades/history?days=${days}`);
+  if (!res.ok) return { trades: [] };
+  return res.json();
+}
+
+export async function closePosition(asset) {
+  const res = await fetch(`${API_URL}/portfolio/close`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ asset }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+  return body;
 }

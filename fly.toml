@@ -1,0 +1,45 @@
+# Fly.io deploy config. Provision infra first, then `fly launch --no-deploy`
+# once to create the app (or `fly apps create trading-os`), followed by:
+#
+#   fly postgres create --name trading-os-db
+#   fly postgres attach trading-os-db          # sets DATABASE_URL secret automatically
+#   fly secrets set API_AUTH_TOKEN=... ANTHROPIC_API_KEY=... MOCK_MODE=true
+#   fly deploy
+#
+# `fly postgres attach` sets DATABASE_URL as `postgres://...` (asyncpg-
+# compatible after Repository's postgresql+asyncpg:// stripping either way).
+# Redis/Kafka are optional — both already fall back to in-memory
+# implementations when unconfigured; add `fly redis create` + REDIS_URL if
+# you want news-sentiment caching to survive restarts.
+
+app = "trading-os"
+primary_region = "iad"
+
+[build]
+  dockerfile = "infrastructure/Dockerfile"
+
+[env]
+  MOCK_MODE = "true"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  # AppState (portfolio, event log, websocket clients) is process-local —
+  # see infrastructure/Dockerfile's --workers 1 comment. Keep this at 1
+  # until that state is externalized; Fly would otherwise round-robin
+  # requests across machines with divergent in-memory state.
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "10s"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

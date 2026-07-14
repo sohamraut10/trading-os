@@ -6,6 +6,7 @@ Pure math — no external API calls, sub-millisecond.
 import numpy as np
 from dataclasses import dataclass
 from .base_agent import BaseAgent, AgentDecision, AgentName, MarketContext, Signal, OHLCV
+from core.data.instruments import INDEX_UNDERLYINGS
 
 
 @dataclass
@@ -123,40 +124,64 @@ def compute_indicators(candles: list[OHLCV]) -> TechnicalIndicators:
     )
 
 
-def _score(ind: TechnicalIndicators, price: float) -> tuple[Signal, float, list[str]]:
+_INDEX_SYMBOLS = INDEX_UNDERLYINGS
+
+
+def _score(ind: TechnicalIndicators, price: float, is_index: bool = False) -> tuple[Signal, float, list[str]]:
     """
     Scoring rubric — each component contributes ±points.
     Final score maps to confidence; direction taken from net vote.
+
+    Index mode (is_index=True): removes EMA stack (trend-following, wrong for mean-reverting
+    indices) and boosts RSI + Bollinger Band weights as primary mean-reversion signals.
     """
     bullish_pts = 0.0
     bearish_pts = 0.0
     reasons: list[str] = []
 
-    # RSI
+    if is_index:
+        reasons.append("[INDEX mode: mean-reversion signals primary]")
+
+    # RSI — boosted weight for indices (mean-reversion anchor)
+    rsi_weight = 30 if is_index else 20
     if ind.rsi_14 < 30:
-        bullish_pts += 20
+        bullish_pts += rsi_weight
         reasons.append(f"RSI oversold ({ind.rsi_14:.1f})")
+    elif ind.rsi_14 < 40 and is_index:
+        bullish_pts += rsi_weight * 0.5
+        reasons.append(f"RSI approaching oversold ({ind.rsi_14:.1f})")
     elif ind.rsi_14 > 70:
-        bearish_pts += 20
+        bearish_pts += rsi_weight
         reasons.append(f"RSI overbought ({ind.rsi_14:.1f})")
+    elif ind.rsi_14 > 60 and is_index:
+        bearish_pts += rsi_weight * 0.5
+        reasons.append(f"RSI approaching overbought ({ind.rsi_14:.1f})")
     elif 40 <= ind.rsi_14 <= 60:
         reasons.append(f"RSI neutral ({ind.rsi_14:.1f})")
 
-    # MACD
+    # MACD — secondary confirmation; reduced weight for indices (trend-following indicator)
+    macd_weight = 10 if is_index else 15
     if ind.macd_hist > 0 and ind.macd_line > ind.macd_signal:
-        bullish_pts += 15
+        bullish_pts += macd_weight
         reasons.append("MACD bullish crossover")
     elif ind.macd_hist < 0 and ind.macd_line < ind.macd_signal:
-        bearish_pts += 15
+        bearish_pts += macd_weight
         reasons.append("MACD bearish crossover")
 
-    # EMA stack (trend alignment)
-    if ind.ema_9 > ind.ema_21 > ind.ema_50:
-        bullish_pts += 20
-        reasons.append("EMA stack bullish (9>21>50)")
-    elif ind.ema_9 < ind.ema_21 < ind.ema_50:
-        bearish_pts += 20
-        reasons.append("EMA stack bearish (9<21<50)")
+    # EMA stack — only for stocks; indices are mean-reverting so EMA alignment at
+    # extremes signals overextension (opposite of what trend-following assumes)
+    if not is_index:
+        if ind.ema_9 > ind.ema_21 > ind.ema_50:
+            bullish_pts += 20
+            reasons.append("EMA stack bullish (9>21>50)")
+        elif ind.ema_9 < ind.ema_21 < ind.ema_50:
+            bearish_pts += 20
+            reasons.append("EMA stack bearish (9<21<50)")
+    else:
+        # For indices: EMA compression (9≈21≈50) signals imminent breakout — flag it
+        ema_spread = abs(ind.ema_9 - ind.ema_50) / ind.ema_50 * 100
+        if ema_spread < 0.3:
+            reasons.append(f"EMA compression ({ema_spread:.2f}%) — volatility contraction, breakout likely")
 
     # Price vs VWAP
     if price > ind.vwap:
@@ -166,13 +191,20 @@ def _score(ind: TechnicalIndicators, price: float) -> tuple[Signal, float, list[
         bearish_pts += 10
         reasons.append(f"Price below VWAP ({ind.vwap:.2f})")
 
-    # Bollinger Band
-    if ind.bb_pct_b < 0.15:
-        bullish_pts += 15
-        reasons.append("Price near lower BB — reversal zone")
-    elif ind.bb_pct_b > 0.85:
-        bearish_pts += 15
-        reasons.append("Price near upper BB — overbought zone")
+    # Bollinger Band — boosted weight for indices (primary reversal signal)
+    bb_weight = 25 if is_index else 15
+    if ind.bb_pct_b < 0.10:
+        bullish_pts += bb_weight
+        reasons.append(f"Price at lower BB extreme (pct_b={ind.bb_pct_b:.2f}) — strong reversal zone")
+    elif ind.bb_pct_b < 0.20:
+        bullish_pts += bb_weight * 0.6
+        reasons.append(f"Price near lower BB (pct_b={ind.bb_pct_b:.2f}) — reversal zone")
+    elif ind.bb_pct_b > 0.90:
+        bearish_pts += bb_weight
+        reasons.append(f"Price at upper BB extreme (pct_b={ind.bb_pct_b:.2f}) — strong overbought zone")
+    elif ind.bb_pct_b > 0.80:
+        bearish_pts += bb_weight * 0.6
+        reasons.append(f"Price near upper BB (pct_b={ind.bb_pct_b:.2f}) — overbought zone")
 
     # Volume confirmation
     if ind.volume_ratio > 1.5:
@@ -217,33 +249,60 @@ class TechnicalAnalystAgent(BaseAgent):
                 warnings=["low_data"],
             )
 
+        is_index = ctx.asset.upper() in _INDEX_SYMBOLS
         ind = compute_indicators(ctx.candles)
-        signal, confidence, reasons = _score(ind, ctx.current_price)
+        signal, confidence, reasons = _score(ind, ctx.current_price, is_index=is_index)
 
-        # Regime override: in highly volatile regime, require stronger signal
-        if ctx.regime == "volatile" and confidence < 75:
+        # Regime override: indices require even stronger signal in volatile regime
+        # (IV spikes mean options premiums are inflated — bad entry price)
+        vol_threshold = 80 if is_index else 75
+        if ctx.regime == "volatile" and confidence < vol_threshold:
             return AgentDecision(
                 agent_name=self.name,
                 signal=Signal.HOLD,
                 confidence=confidence,
-                reasoning="Volatile regime — technical signal below threshold for safe entry",
+                reasoning=(
+                    f"Volatile regime — {'index' if is_index else 'technical'} signal "
+                    f"below threshold ({confidence:.0f} < {vol_threshold}) for safe entry"
+                ),
                 indicators=ind.__dict__,
                 warnings=["regime_override"],
             )
+
+        # IV skew adjustment (index only) — options market reveals directional expectation
+        # Positive skew (put IV > call IV) = market pricing downside = bearish confirmation
+        # Negative skew = call IV elevated = market pricing upside = bullish confirmation
+        iv_skew = float(ctx.macro_context.get("iv_skew", 0.0))
+        if is_index and abs(iv_skew) >= 2.0:
+            skew_confirms = (iv_skew > 0 and signal == Signal.SELL) or \
+                            (iv_skew < 0 and signal == Signal.BUY)
+            skew_contradicts = (iv_skew > 0 and signal == Signal.BUY) or \
+                               (iv_skew < 0 and signal == Signal.SELL)
+            if skew_confirms:
+                confidence = min(95.0, confidence + 4.0)
+                reasons.append(f"IV skew {iv_skew:+.1f} confirms direction (options market aligned)")
+            elif skew_contradicts:
+                confidence = max(50.0, confidence - 4.0)
+                reasons.append(f"IV skew {iv_skew:+.1f} contradicts signal — caution")
+
+        indicators = {
+            "rsi_14": round(ind.rsi_14, 2),
+            "macd_hist": round(ind.macd_hist, 4),
+            "ema_9": round(ind.ema_9, 4),
+            "ema_21": round(ind.ema_21, 4),
+            "vwap": round(ind.vwap, 4),
+            "bb_pct_b": round(ind.bb_pct_b, 3),
+            "volume_ratio": round(ind.volume_ratio, 2),
+            "atr_14": round(ind.atr_14, 4),
+            "is_index": is_index,
+        }
+        if is_index and iv_skew != 0.0:
+            indicators["iv_skew"] = round(iv_skew, 2)
 
         return AgentDecision(
             agent_name=self.name,
             signal=signal,
             confidence=confidence,
             reasoning=" | ".join(reasons),
-            indicators={
-                "rsi_14": round(ind.rsi_14, 2),
-                "macd_hist": round(ind.macd_hist, 4),
-                "ema_9": round(ind.ema_9, 4),
-                "ema_21": round(ind.ema_21, 4),
-                "vwap": round(ind.vwap, 4),
-                "bb_pct_b": round(ind.bb_pct_b, 3),
-                "volume_ratio": round(ind.volume_ratio, 2),
-                "atr_14": round(ind.atr_14, 4),
-            },
+            indicators=indicators,
         )

@@ -1,14 +1,43 @@
 global:
-  scrape_interval: 10s
-  evaluation_interval: 10s
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  # Label all metrics with this instance so multi-instance setups are easy to distinguish
+  external_labels:
+    instance: trading-os-macbook
+    environment: production
+
+# No alerting rules yet; add a rule_files block and alertmanager_configs here
+# when you're ready to add PagerDuty / Telegram alerts via Alertmanager.
 
 scrape_configs:
+  # ── Trading OS API ──────────────────────────────────────────────────────────
+  # Exposes custom trading metrics: signals, latency, portfolio equity, etc.
   - job_name: trading-os-api
     static_configs:
-      - targets: ['trading-os-api:8000']
+      - targets: ['api:8000']
     metrics_path: /metrics
     scrape_interval: 10s
+    scrape_timeout: 5s
 
+  # ── Prometheus self-metrics ─────────────────────────────────────────────────
   - job_name: prometheus
     static_configs:
       - targets: ['localhost:9090']
+    metrics_path: /metrics
+    scrape_interval: 30s
+
+  # ── Caddy (built-in /metrics endpoint requires Caddy admin API) ─────────────
+  # Caddy exposes Prometheus metrics on its admin port (localhost:2019) by
+  # default. The admin port is not published externally — only reachable from
+  # within the Docker monitoring network.
+  - job_name: caddy
+    static_configs:
+      - targets: ['caddy:2019']
+    metrics_path: /metrics
+    scrape_interval: 30s
+
+  # ── Node exporter (optional — uncomment if you add the container) ───────────
+  # - job_name: node-exporter
+  #   static_configs:
+  #     - targets: ['node-exporter:9100']
+  #   scrape_interval: 15s

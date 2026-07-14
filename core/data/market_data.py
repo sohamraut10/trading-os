@@ -70,13 +70,27 @@ class AlpacaProvider(MarketDataProvider):
 
     async def get_current_price(self, symbol: str) -> float:
         import aiohttp
+        # Try quotes endpoint first (live during market hours)
         url = f"https://data.alpaca.markets/v2/stocks/{symbol}/quotes/latest"
-        async with aiohttp.ClientSession(headers=self._headers) as session:
-            async with session.get(url) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
-        q = data.get("quote", {})
-        return (q.get("ap", 0) + q.get("bp", 0)) / 2 or q.get("ap", 0)
+        try:
+            async with aiohttp.ClientSession(headers=self._headers) as session:
+                async with session.get(url) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json()
+            q = data.get("quote", {})
+            # ap/bp can be "" (empty string) when the market is closed
+            try:
+                ap = float(q.get("ap") or 0)
+                bp = float(q.get("bp") or 0)
+            except (TypeError, ValueError):
+                ap = bp = 0.0
+            if ap or bp:
+                return (ap + bp) / 2 if ap and bp else (ap or bp)
+        except Exception:
+            pass
+        # Fallback: last bar close (works after-hours and on weekends)
+        candles = await self.get_candles(symbol, "1d", 1)
+        return candles[-1].close if candles else 0.0
 
     async def get_order_book(self, symbol: str, depth: int = 20) -> OrderBook:
         # Alpaca doesn't provide L2 for free — return synthetic from quote
@@ -218,6 +232,232 @@ class BinanceProvider(MarketDataProvider):
         bids = [OrderBookLevel(price=price * (1 - 0.0001 * (i + 1)), size=1.0) for i in range(depth)]
         asks = [OrderBookLevel(price=price * (1 + 0.0001 * (i + 1)), size=1.0) for i in range(depth)]
         return OrderBook(bids=bids, asks=asks, timestamp=time.time())
+
+
+from core.data.instruments import scrip_master
+
+# Dhan daily-bar timestamps are midnight IST (UTC+5:30).
+# lightweight-charts runs in UTC mode, so a bar stamped "July 10 00:00 IST"
+# (= July 9 18:30 UTC) renders on July 9 — one day behind NSE's calendar.
+# Adding the IST offset shifts every daily timestamp to midnight UTC so the
+# chart date matches the NSE trading date.
+_IST_OFFSET_SEC = 19_800  # 5h 30m
+
+
+class DhanProvider(MarketDataProvider):
+    """
+    Dhan market-data provider for Indian markets (NSE/BSE equities, F&O, indices).
+
+    Candle intervals supported by Dhan historical API:
+      intraday  → 1, 5, 15, 25, 60  (minutes)
+      daily     → "D"
+
+    Timeframe strings accepted: "1m", "5m", "15m", "25m", "1h", "1d"
+
+    Symbol resolution: pass a numeric security_id directly or a ticker like
+    "RELIANCE" — resolved via the static NSE instrument map and cached.
+    Index symbols (NIFTY, BANKNIFTY, etc.) automatically use the IDX_I exchange.
+    """
+
+    _TF_MAP = {
+        "1m":  ("intraday", 1),
+        "5m":  ("intraday", 5),
+        "15m": ("intraday", 15),
+        "25m": ("intraday", 25),
+        "1h":  ("intraday", 60),
+        "1d":  ("daily",    "D"),
+    }
+
+    # Candle cache: key = (symbol, timeframe, limit) → (fetched_at, candles)
+    _candle_cache: dict = {}
+    _CANDLE_TTL_SEC = 60          # reuse cached bars for 60 s
+    _last_request_at: float = 0.0 # shared rate-limit guard
+    _MIN_REQUEST_GAP = 1.1        # seconds between Dhan API calls
+
+    def __init__(
+        self,
+        client_id: str,
+        access_token: str,
+        default_exchange: str = "NSE_EQ",
+        instrument_type: str = "EQUITY",
+    ):
+        try:
+            import dhanhq as _dh
+            ctx = _dh.DhanContext(client_id, access_token)
+            self._dhan = _dh.dhanhq(ctx)
+        except ImportError:
+            raise RuntimeError("dhanhq is not installed — run `pip install dhanhq`")
+        self._default_exchange = default_exchange
+        self._instrument_type = instrument_type
+        self._symbol_cache: dict[str, tuple[str, str, str]] = {}
+
+    def _resolve_instrument(self, symbol: str) -> tuple[str, str, str]:
+        """Return (security_id, exchange_segment, instrument_type) from scrip master."""
+        if symbol.lstrip("-").isdigit():
+            return symbol, self._default_exchange, self._instrument_type
+        upper = symbol.upper()
+        if upper in self._symbol_cache:
+            cached = self._symbol_cache[upper]
+            return cached
+        inst = scrip_master.resolve(upper)
+        if inst:
+            result = (inst.security_id, inst.exchange, inst.instrument_type)
+            self._symbol_cache[upper] = result
+            return result
+        return symbol, self._default_exchange, self._instrument_type
+
+    async def get_candles(self, symbol: str, timeframe: str, limit: int = 300) -> list[OHLCV]:
+        import asyncio
+        import time as _time
+        from datetime import datetime, timedelta
+
+        # Return cached bars if still fresh
+        cache_key = (symbol.upper(), timeframe, limit)
+        cached = self._candle_cache.get(cache_key)
+        if cached and (_time.monotonic() - cached[0]) < self._CANDLE_TTL_SEC:
+            return cached[1]
+
+        # Throttle: enforce minimum gap between Dhan API calls
+        gap = self._MIN_REQUEST_GAP - (_time.monotonic() - self.__class__._last_request_at)
+        if gap > 0:
+            await asyncio.sleep(gap)
+
+        security_id, exchange, itype = self._resolve_instrument(symbol)
+        tf_type, tf_interval = self._TF_MAP.get(timeframe, ("intraday", 60))
+
+        now = datetime.now()
+        if tf_type == "daily":
+            from_dt = now - timedelta(days=limit * 2)
+        else:
+            minutes_needed = limit * int(tf_interval)
+            from_dt = now - timedelta(minutes=minutes_needed * 1.5 + 60)
+
+        from_date = from_dt.strftime("%Y-%m-%d")
+        to_date = now.strftime("%Y-%m-%d")
+
+        loop = asyncio.get_event_loop()
+        for attempt in range(3):
+            try:
+                self.__class__._last_request_at = _time.monotonic()
+                if tf_type == "daily":
+                    raw = await loop.run_in_executor(
+                        None,
+                        lambda: self._dhan.historical_daily_data(
+                            security_id, exchange, itype, from_date, to_date,
+                        ),
+                    )
+                else:
+                    raw = await loop.run_in_executor(
+                        None,
+                        lambda: self._dhan.intraday_minute_data(
+                            security_id, exchange, itype, from_date, to_date,
+                            interval=int(tf_interval),
+                        ),
+                    )
+            except Exception as e:
+                raise RuntimeError(f"DhanProvider.get_candles failed for {symbol}: {e}") from e
+
+            raw_data = raw.get("data") if isinstance(raw, dict) else None
+            data = raw_data if isinstance(raw_data, dict) else {}
+            if not data:
+                if isinstance(raw, dict) and raw.get("status") == "failure":
+                    remarks = raw.get("remarks", {})
+                    err_code = remarks.get("error_code", "") if isinstance(remarks, dict) else str(remarks)
+                    if err_code == "DH-904" and attempt < 2:
+                        # Rate limit — back off and retry
+                        await asyncio.sleep(2.0 * (attempt + 1))
+                        continue
+                    raise RuntimeError(f"Dhan API error: {remarks}")
+                # Silent empty response (ghost rate-limit or market closed).
+                # Return stale cache rather than caching an empty result.
+                if cached:
+                    log.warning("%s %s: empty response from Dhan — returning stale cache", symbol, timeframe)
+                    return cached[1]
+                if attempt < 2:
+                    await asyncio.sleep(2.0 * (attempt + 1))
+                    continue
+            break  # success or permanent empty
+
+        opens  = data.get("open",      [])
+        highs  = data.get("high",      [])
+        lows   = data.get("low",       [])
+        closes = data.get("close",     [])
+        vols   = data.get("volume",    [0] * len(opens))
+        times  = data.get("timestamp", [])
+
+        candles = []
+        for i in range(len(opens)):
+            try:
+                ts_val = times[i] if i < len(times) else 0
+                ts = _parse_ts(ts_val) if isinstance(ts_val, str) else float(ts_val)
+                if tf_type == "daily":
+                    ts += _IST_OFFSET_SEC
+                candles.append(OHLCV(
+                    timestamp=ts,
+                    open=float(opens[i]),
+                    high=float(highs[i]),
+                    low=float(lows[i]),
+                    close=float(closes[i]),
+                    volume=float(vols[i]) if i < len(vols) else 0.0,
+                ))
+            except Exception:
+                continue
+
+        result = candles[-limit:]
+        self._candle_cache[cache_key] = (_time.monotonic(), result)
+        return result
+
+    async def get_current_price(self, symbol: str) -> float:
+        import asyncio
+        security_id, exchange, _ = self._resolve_instrument(symbol)
+        loop = asyncio.get_event_loop()
+
+        # 1. Real-time quote (requires Dhan market-data subscription; often returns
+        #    status:failure without one — that's expected, we cascade below)
+        try:
+            raw = await loop.run_in_executor(
+                None,
+                lambda: self._dhan.quote_data({exchange: [security_id]}),
+            )
+            if isinstance(raw, dict) and raw.get("status") == "success":
+                seg_data = raw.get("data", {}).get(exchange, {})
+                entry = seg_data.get(security_id) or (list(seg_data.values())[0] if seg_data else {})
+                ltp = entry.get("last_price", entry.get("ltp", entry.get("close", 0)))
+                if ltp:
+                    return float(ltp)
+        except Exception:
+            pass
+
+        # 2. Last 1-minute intraday bar (LTP-accurate; closer than daily VWAP close)
+        try:
+            intraday = await self.get_candles(symbol, "1m", 5)
+            if intraday:
+                return intraday[-1].close
+        except Exception:
+            pass
+
+        # 3. Daily close (official NSE VWAP-based closing price — last resort)
+        # Use limit=5 because Dhan returns DH-905 for limit=1 on daily bars
+        try:
+            daily = await self.get_candles(symbol, "1d", 5)
+            if daily:
+                return daily[-1].close
+        except Exception:
+            pass
+
+        return 0.0
+
+    async def get_order_book(self, symbol: str, depth: int = 20) -> OrderBook:
+        # Dhan v2 has no public L2 orderbook API — return synthetic from LTP
+        price = await self.get_current_price(symbol)
+        bids = [OrderBookLevel(price=price * (1 - 0.0001 * (i + 1)), size=100.0) for i in range(depth)]
+        asks = [OrderBookLevel(price=price * (1 + 0.0001 * (i + 1)), size=100.0) for i in range(depth)]
+        return OrderBook(bids=bids, asks=asks, timestamp=time.time())
+
+    async def stream_price(self, symbol: str) -> AsyncIterator[float]:
+        while True:
+            yield await self.get_current_price(symbol)
+            await asyncio.sleep(1)
 
 
 class MockProvider(MarketDataProvider):

@@ -5,6 +5,7 @@ from core.agents.base_agent import MarketContext, Signal, TradeHypothesis
 from core.strategy.strategy_base import BaseStrategy, StrategyType
 from core.strategy.strategies import STRATEGY_REGISTRY
 from core.agents.quant_agent import _hurst_exponent, _historical_volatility, _returns
+from core.data.instruments import INDEX_UNDERLYINGS as _INDEX_SYMBOLS
 
 
 class StrategySelector:
@@ -72,7 +73,13 @@ class StrategySelector:
         regime = ctx.regime.lower()
 
         # Selection Matrix
-        if vol_percentile > 0.95:
+        # Indices mean-revert ~60% of the time regardless of Hurst/regime — hardwire MR.
+        # Swing/TrendFollow on an index produces false trending signals and gets blocked
+        # by the swing confidence floor repeatedly.
+        if ctx.asset.upper() in _INDEX_SYMBOLS:
+            selected_type = StrategyType.MEAN_REVERSION
+            reason = f"Index instrument — mean reversion strategy (Hurst={hurst:.2f}, regime={regime})"
+        elif vol_percentile > 0.95:
             selected_type = StrategyType.SCALPING
             reason = f"Extreme volatility percentile ({vol_percentile:.2f} > 0.95) - Scalping mode triggered (tight stop loss)"
         elif regime == "volatile":
@@ -81,12 +88,9 @@ class StrategySelector:
         elif hurst > 0.55 and regime in ("bull", "bear"):
             selected_type = StrategyType.TREND_FOLLOW
             reason = f"Trending market: Hurst exponent {hurst:.2f} > 0.55 inside {regime} regime"
-        elif hurst < 0.45 and regime == "sideways":
-            selected_type = StrategyType.MEAN_REVERSION
-            reason = f"Mean-reverting market: Hurst exponent {hurst:.2f} < 0.45 inside sideways regime"
         elif regime == "sideways":
             selected_type = StrategyType.MEAN_REVERSION
-            reason = f"Sideways regime detected - Mean Reversion strategy selected"
+            reason = f"Sideways regime — Mean reversion strategy (Hurst {hurst:.2f}, Vol {vol_percentile:.2f})"
         else:
             selected_type = StrategyType.SWING
             reason = f"Default Swing strategy selected (Regime: {regime}, Hurst: {hurst:.2f}, Vol: {vol_percentile:.2f})"

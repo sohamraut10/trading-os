@@ -7,7 +7,11 @@ __pycache__/
 dist/
 build/
 .env
+*.pem
+*.key
+secrets/
 *.log
 trade_journal.jsonl
 agent_performance.json
 .DS_Store
+.env.prod

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS LaunchAgent for Trading OS (runs as your user, not root).
+  LaunchAgent is required because Docker Desktop runs in user-space.
+
+  Install (no sudo needed):
+    mkdir -p ~/Library/LaunchAgents
+    cp infrastructure/launchd/com.trading-os.plist ~/Library/LaunchAgents/
+    launchctl load -w ~/Library/LaunchAgents/com.trading-os.plist
+
+  Unload:
+    launchctl unload ~/Library/LaunchAgents/com.trading-os.plist
+
+  View logs:
+    tail -f /tmp/trading-os-stdout.log
+    tail -f /tmp/trading-os-stderr.log
+
+  Check status:
+    launchctl list com.trading-os
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.trading-os</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/docker</string>
+        <string>compose</string>
+        <string>-f</string>
+        <string>/Users/sohamraut/trading-os-1/docker-compose.prod.yml</string>
+        <string>--env-file</string>
+        <string>/Users/sohamraut/trading-os-1/.env.prod</string>
+        <string>up</string>
+        <string>-d</string>
+        <string>--remove-orphans</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/sohamraut/trading-os-1</string>
+
+    <!-- Run at login and whenever Docker socket appears -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Re-trigger when Docker Desktop starts (sock appears after login) -->
+    <key>WatchPaths</key>
+    <array>
+        <string>/var/run/docker.sock</string>
+    </array>
+
+    <!-- Don't restart after a clean exit (docker compose up -d exits 0) -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <!-- Wait 30 s between retries if it fails (Docker not ready yet) -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>TimeOut</key>
+    <integer>120</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/trading-os-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/trading-os-stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/sohamraut</string>
+    </dict>
+</dict>
+</plist>

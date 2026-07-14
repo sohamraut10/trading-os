@@ -180,6 +180,82 @@ WS   /ws/signals              — real-time signal stream
 pytest tests/ -v
 ```
 
+### Deploy to Vercel
+
+Serverless functions can't hold a WebSocket open or run an indefinite
+background loop, and give no guarantee of in-memory state surviving between
+invocations — so the deployment differs from Docker/local in three ways:
+
+- `/ws/signals` and `/ws/events` still exist (for Docker/local clients) but
+  the dashboard instead polls `GET /events/recent` (same Postgres `events`
+  table, just pulled instead of pushed).
+- `live_suggestions_loop`'s always-on background task is replaced by
+  `GET /cron/tick`, wired up as a Vercel Cron in `vercel.json`
+  (`*/10 * * * *` by default — adjust for your plan's cron limits).
+- Portfolio equity/cash resume from the latest `portfolio_snapshots` row on
+  every cold start instead of resetting to the hardcoded starting equity.
+  Per-symbol open positions are **not** persisted (no positions table yet),
+  so they — and any unrealized P&L they represented — are still lost across
+  a cold start. `AdaptiveWeightManager`'s learned weights also still persist
+  to a local JSON file (`/tmp/agent_performance.json`), which is
+  serverless-ephemeral, so weight recalibration can reset between cold
+  starts; only equity/cash/events/signals are Postgres-backed.
+
+Required setup:
+1. **An external Postgres** — Vercel doesn't host one. Point `DATABASE_URL`
+   at a managed instance (Neon, Supabase, Railway, etc.) and load
+   `infrastructure/init.sql` against it once.
+2. **Vercel project env vars**: `DATABASE_URL`, `MOCK_MODE=true` (for a demo
+   deployment with no exchange/broker keys), `CRON_SECRET` (Vercel
+   auto-sends `Authorization: Bearer $CRON_SECRET` on cron requests — this
+   is what `GET /cron/tick` checks), `API_AUTH_TOKEN` (protects trade/portfolio
+   mutation endpoints), and whichever of `ANTHROPIC_API_KEY` /
+   `ALPACA_API_KEY` / `BINANCE_API_KEY` / `NEWS_API_KEY` you actually have.
+3. **Dashboard build env var**: set `VITE_API_BASE=/api` on the Vercel
+   project so the dashboard calls `/api/*` (where `api/index.py` mounts the
+   backend) instead of same-origin root paths.
+4. `vercel deploy` (or connect the GitHub repo in the Vercel dashboard).
+
+`vercel.json` builds the dashboard as a static site and `api/index.py` as
+the API's Python serverless function. `api/index.py` builds its own
+top-level FastAPI app and includes `api.main`'s router under `/api` — it
+does **not** use `app.mount()`, because Starlette's `Mount` doesn't forward
+ASGI lifespan events to a mounted sub-app, which would silently skip
+`state.db.connect()` (and the portfolio resume) entirely.
+
+### Deploy to Render or Fly.io (alternative to Vercel)
+
+Both run the existing Docker image as a real long-lived container instead
+of serverless functions, so **none of the Vercel workarounds above are
+needed** — `live_suggestions_loop`, the `/ws/*` WebSocket endpoints, and
+in-memory `AppState` all work exactly as designed, no code changes required.
+`infrastructure/Dockerfile` is now a multi-stage build: it builds the
+dashboard first and copies the compiled assets in, so a single container
+serves both the API and a real built dashboard at `/` (previously the
+Dockerfile only copied source and never ran `npm run build`, so `/` would
+have served the raw, unprocessed `dashboard/index.html`).
+
+**Render**: `render.yaml` is a Blueprint — connect the repo in the Render
+dashboard and it provisions a Postgres instance plus the web service from
+`infrastructure/Dockerfile` automatically. Set the `sync: false` env vars
+(`API_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, etc.) in the dashboard after first
+deploy.
+
+**Fly.io**:
+```bash
+fly apps create trading-os
+fly postgres create --name trading-os-db
+fly postgres attach trading-os-db      # sets DATABASE_URL automatically
+fly secrets set API_AUTH_TOKEN=... ANTHROPIC_API_KEY=...
+fly deploy
+```
+
+Both configs pin to a single instance/machine — `AppState` (portfolio,
+event log, websocket clients) is process-local, same reason
+`infrastructure/Dockerfile`'s `CMD` uses `--workers 1`. Redis/Kafka stay
+optional on either platform; both already degrade to in-memory
+implementations when unconfigured.
+
 ---
 
 ## Repository

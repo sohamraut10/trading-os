@@ -7,6 +7,7 @@ import numpy as np
 from dataclasses import dataclass
 from scipy import stats
 from .base_agent import BaseAgent, AgentDecision, AgentName, MarketContext, Signal, OHLCV
+from core.data.instruments import INDEX_UNDERLYINGS
 
 
 @dataclass
@@ -146,38 +147,65 @@ def compute_quant_metrics(candles: list[OHLCV]) -> QuantMetrics:
     )
 
 
-def _quant_signal(m: QuantMetrics) -> tuple[Signal, float, str]:
+_INDEX_SYMBOLS = INDEX_UNDERLYINGS
+
+
+def _quant_signal(m: QuantMetrics, is_index: bool = False, iv_rank: float = -1.0) -> tuple[Signal, float, str]:
     score_bull = 0.0
     score_bear = 0.0
     reasons = []
+    warnings = []
 
     # Mean reversion play: z-score extremes
+    # For indices: require stronger z-score (±2.0 vs ±1.5) since we're buying options
+    # and need high conviction — a weak extreme can reverse further on macro noise.
+    # Also, if IV rank is known and too low (<60), buying options is expensive relative
+    # to realized vol — suppress the signal.
     if m.hurst_exponent < 0.45:
-        if m.z_score < -1.5:
+        mr_threshold = 2.0 if is_index else 1.5
+        if m.z_score < -mr_threshold:
             score_bull += 25
-            reasons.append(f"Mean-reversion: z={m.z_score:.2f}, H={m.hurst_exponent:.2f} (MR regime)")
-        elif m.z_score > 1.5:
+            reasons.append(
+                f"Mean-reversion: z={m.z_score:.2f} (threshold={mr_threshold:.1f}), H={m.hurst_exponent:.2f}"
+            )
+            if is_index and iv_rank > 75:
+                # High vol rank = expensive options; IV crush risk even if direction is right
+                score_bull *= 0.7
+                warnings.append(
+                    f"IV crush risk: vol rank {iv_rank:.0f} > 75 — options expensive, confidence penalized"
+                )
+        elif m.z_score > mr_threshold:
             score_bear += 25
-            reasons.append(f"Mean-reversion short: z={m.z_score:.2f}, H={m.hurst_exponent:.2f}")
+            reasons.append(
+                f"Mean-reversion short: z={m.z_score:.2f} (threshold={mr_threshold:.1f}), H={m.hurst_exponent:.2f}"
+            )
+            if is_index and iv_rank > 75:
+                score_bear *= 0.7
+                warnings.append(
+                    f"IV crush risk: vol rank {iv_rank:.0f} > 75 — options expensive, confidence penalized"
+                )
 
     # Trend-following: Hurst > 0.55 + momentum
+    # For indices: momentum signals are less reliable due to macro sensitivity — halve the score
     elif m.hurst_exponent > 0.55:
+        trend_weight = 10 if is_index else 20
         if m.momentum_score > 0.5:
-            score_bull += 20
+            score_bull += trend_weight
             reasons.append(f"Trend regime H={m.hurst_exponent:.2f}, momentum={m.momentum_score:.2f}%")
         elif m.momentum_score < -0.5:
-            score_bear += 20
+            score_bear += trend_weight
             reasons.append(f"Downtrend H={m.hurst_exponent:.2f}, momentum={m.momentum_score:.2f}%")
 
-    # Rolling Sharpe
-    if m.sharpe_rolling > 1.0:
-        score_bull += 15
-        reasons.append(f"Strong rolling Sharpe: {m.sharpe_rolling:.2f}")
-    elif m.sharpe_rolling < -1.0:
-        score_bear += 15
-        reasons.append(f"Negative rolling Sharpe: {m.sharpe_rolling:.2f}")
+    # Rolling Sharpe — skip for indices (spot Sharpe doesn't reflect options P&L dynamics)
+    if not is_index:
+        if m.sharpe_rolling > 1.0:
+            score_bull += 15
+            reasons.append(f"Strong rolling Sharpe: {m.sharpe_rolling:.2f}")
+        elif m.sharpe_rolling < -1.0:
+            score_bear += 15
+            reasons.append(f"Negative rolling Sharpe: {m.sharpe_rolling:.2f}")
 
-    # Historical probability
+    # Historical probability (valid for both stocks and indices)
     if m.prob_profit > 0.60:
         score_bull += 20
         reasons.append(f"Historical win rate: {m.prob_profit:.0%}, EV={m.expected_value:.2f}%")
@@ -186,8 +214,8 @@ def _quant_signal(m: QuantMetrics) -> tuple[Signal, float, str]:
         reasons.append(f"Historical win rate unfavorable: {m.prob_profit:.0%}")
 
     # Volatility risk flag
-    warnings = []
-    if m.volatility_pct > 80:
+    vol_cap = 40 if is_index else 80  # indices at 40%+ annualized = stressed market
+    if m.volatility_pct > vol_cap:
         score_bull *= 0.7
         score_bear *= 0.7
         warnings.append(f"High volatility {m.volatility_pct:.1f}% annualized — confidence penalized")
@@ -198,7 +226,7 @@ def _quant_signal(m: QuantMetrics) -> tuple[Signal, float, str]:
 
     total = score_bull + score_bear
     if total == 0:
-        return Signal.HOLD, 50.0, "No statistical edge detected"
+        return Signal.HOLD, 50.0, "No statistical edge detected", warnings
 
     if score_bull > score_bear:
         confidence = 50 + (score_bull / total - 0.5) * 90
@@ -212,26 +240,24 @@ def _quant_signal(m: QuantMetrics) -> tuple[Signal, float, str]:
 class QuantAgent(BaseAgent):
     name = AgentName.QUANT
     MIN_CANDLES = 60
+    MIN_CANDLES_INDEX = 30  # indices have clean daily data; fewer bars needed
 
     async def _analyze(self, ctx: MarketContext) -> AgentDecision:
-        if len(ctx.candles) < self.MIN_CANDLES:
+        is_index = ctx.asset.upper() in _INDEX_SYMBOLS
+        min_candles = self.MIN_CANDLES_INDEX if is_index else self.MIN_CANDLES
+        if len(ctx.candles) < min_candles:
             return AgentDecision(
                 agent_name=self.name,
                 signal=Signal.HOLD,
                 confidence=50.0,
-                reasoning=f"Insufficient history: need {self.MIN_CANDLES}, got {len(ctx.candles)}",
+                reasoning=f"Insufficient history: need {min_candles}, got {len(ctx.candles)}",
                 warnings=["low_data"],
             )
 
         m = compute_quant_metrics(ctx.candles)
-        result = _quant_signal(m)
-
-        # _quant_signal may return 3 or 4 values
-        if len(result) == 4:
-            signal, confidence, reasoning, warnings = result
-        else:
-            signal, confidence, reasoning = result
-            warnings = []
+        signal, confidence, reasoning, warnings = _quant_signal(
+            m, is_index=is_index, iv_rank=ctx.iv_rank
+        )
 
         return AgentDecision(
             agent_name=self.name,

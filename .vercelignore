@@ -1,0 +1,11 @@
+tests/
+infrastructure/
+scripts/
+SESSION.md
+pytest.ini
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+trade_journal.jsonl
+agent_performance.json

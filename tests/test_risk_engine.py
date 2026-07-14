@@ -131,6 +131,43 @@ def test_clean_approval():
     assert result.rejection_reasons == []
 
 
+# ── Manual order gate ─────────────────────────────────────────────────
+
+def test_manual_order_clean_approval():
+    engine = RiskEngine()
+    result = engine.check_manual_order("buy", 0.05, 65000.0, _portfolio())
+    assert result.is_tradeable()
+    assert result.approved_position_size_usd > 0
+
+def test_manual_order_rejected_on_circuit_breaker():
+    engine = RiskEngine()
+    port = _portfolio(daily_pnl_pct=-0.04)
+    result = engine.check_manual_order("buy", 0.05, 65000.0, port)
+    assert result.status == RiskStatus.REJECTED
+    assert any("circuit breaker" in r.lower() for r in result.rejection_reasons)
+
+def test_manual_order_rejected_when_fully_deployed():
+    engine = RiskEngine()
+    port = _portfolio(positions={"A": 22_000.0, "B": 20_000.0})
+    result = engine.check_manual_order("buy", 0.05, 65000.0, port)
+    assert result.status == RiskStatus.REJECTED
+
+def test_manual_order_scaled_down_to_exposure_limit():
+    engine = RiskEngine()
+    # 35% already deployed, 5% headroom left; request notional far beyond that
+    port = _portfolio(positions={"ETH": 35_000.0})
+    quantity = 1.0  # 1 BTC @ 65000 = $65,000, way over the $5,000 headroom
+    result = engine.check_manual_order("buy", quantity, 65000.0, port)
+    assert result.is_tradeable()
+    assert result.status == RiskStatus.SCALED_DOWN
+    assert result.approved_position_size_usd < quantity * 65000.0
+
+def test_manual_order_rejected_on_invalid_quantity():
+    engine = RiskEngine()
+    result = engine.check_manual_order("buy", 0.0, 65000.0, _portfolio())
+    assert result.status == RiskStatus.REJECTED
+
+
 # ── PositionSizer ─────────────────────────────────────────────────────
 
 def test_kelly_zero_on_bad_inputs():
