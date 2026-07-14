@@ -155,6 +155,13 @@ class PositionMonitor:
 
             sl_price = avg_price * (1 - sl_pct) if is_long else avg_price * (1 + sl_pct)
             sl_side = "sell" if is_long else "buy"
+            # MCX circuit band is ±5%; cap SL to 4.8% so the trigger is never rejected.
+            if pos.get("exchange") == "MCX_COMM":
+                _mcx_cap = 0.048
+                if is_long:
+                    sl_price = max(sl_price, avg_price * (1 - _mcx_cap))
+                else:
+                    sl_price = min(sl_price, avg_price * (1 + _mcx_cap))
 
             # If market price is already past SL level → close at market immediately
             if current_price > 0 and (

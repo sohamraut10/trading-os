@@ -158,6 +158,8 @@ class AlpacaBroker(BrokerAdapter):
         order.status = OrderStatus(raw.status)
         order.filled_qty = float(raw.filled_qty or 0)
         order.avg_fill_price = float(raw.filled_avg_price or 0)
+        order.side = "buy" if str(getattr(raw, "side", "")).lower() == "buy" else "sell"
+        order.quantity = float(getattr(raw, "qty", 0) or 0)
         return order
 
     async def cancel_orders_for_symbol(self, symbol: str) -> int:
@@ -481,6 +483,8 @@ class DhanBroker(BrokerAdapter):
             order.status = self._STATUS_MAP.get(data.get("orderStatus", ""), OrderStatus.SUBMITTED)
             order.filled_qty = float(data.get("filledQty", 0))
             order.avg_fill_price = float(data.get("price", 0))
+            order.side = "buy" if str(data.get("transactionType", "")).upper() == "BUY" else "sell"
+            order.quantity = float(data.get("quantity", 0))
             # Store the full trading symbol in metadata; keep order.asset as the
             # user-facing symbol so downstream resubmits resolve correctly.
             order.metadata["trading_symbol"] = data.get("tradingSymbol", "")
@@ -635,6 +639,16 @@ class SmartOrderRouter:
                 if poll.status == OrderStatus.FILLED:
                     entry = poll
                     break
+                if poll.status == OrderStatus.PARTIAL:
+                    # Partial fill received — cancel the remainder and proceed with
+                    # what filled. SL/TP will be sized to filled_qty below.
+                    log.warning(
+                        "PARTIAL fill for %s — %.0f of %.0f filled; cancelling remainder",
+                        signal.asset, poll.filled_qty, _saved_qty,
+                    )
+                    await self._broker.cancel_order(entry.broker_order_id)
+                    entry = poll
+                    break
             else:
                 # Timeout — cancel LIMIT and resubmit as MARKET with original side/qty
                 await self._broker.cancel_order(entry.broker_order_id)
@@ -661,9 +675,22 @@ class SmartOrderRouter:
         # but rejects it for BUY SL orders (short exits) with "Price should be greater
         # than Trigger Price". For short exits use STOP_LOSS (limit) with a 0.2%
         # buffer above trigger so the fill is guaranteed near the trigger.
+        # Cap MCX SL within circuit band to prevent "rate not within chk limit"
+        # on the trigger/limit price. Uses same 4.8% threshold as TP cap above.
+        sl_trigger = risk.stop_loss_price
+        try:
+            _, _sl_exchange, _ = self._broker._resolve_instrument(signal.asset)
+            if _sl_exchange == "MCX_COMM":
+                if sl_side == "sell":   # long exit SL — must not be too far below entry
+                    sl_trigger = max(sl_trigger, fill_price * 0.952)
+                else:                   # short exit SL — must not be too far above entry
+                    sl_trigger = min(sl_trigger, fill_price * 1.048)
+        except Exception:
+            pass
+
         if sl_side == "buy":
             sl_order_type = OrderType.STOP_LIMIT
-            sl_limit = round(risk.stop_loss_price * 1.002, 2)
+            sl_limit = round(sl_trigger * 1.002, 2)
         else:
             sl_order_type = OrderType.STOP
             sl_limit = None
@@ -672,7 +699,7 @@ class SmartOrderRouter:
             side=sl_side,
             quantity=_fill_qty,
             order_type=sl_order_type,
-            stop_price=risk.stop_loss_price,
+            stop_price=sl_trigger,
             limit_price=sl_limit,
             metadata={"type": "stop_loss", "parent": entry.id},
         )
