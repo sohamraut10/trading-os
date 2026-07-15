@@ -129,26 +129,32 @@ class OptionsRouter:
         if cost_per_lot <= 0:
             raise RuntimeError(f"Zero premium for {underlying} {strike} {'CE' if is_call else 'PE'}")
 
-        if cost_per_lot > risk.approved_position_size_usd:
-            # Kelly budget is below 1-lot minimum. Infer total equity and check
-            # if 1 lot is still safe (same 40% cap as equity Gate 3b in risk engine).
-            implied_equity = (
-                risk.approved_position_size_usd / risk.approved_position_size_pct
-                if risk.approved_position_size_pct > 0 else 0.0
-            )
-            lot_pct_equity = cost_per_lot / implied_equity if implied_equity > 0 else 1.0
-            if lot_pct_equity > 0.40:
+        # Index options: 1 lot is meaningful (BANKNIFTY=15, SENSEX=10 shares).
+        # Stock options: 2-lot minimum since single lots don't justify ₹60 brokerage.
+        min_lots = 1 if underlying in _INDEX_UNDERLYINGS else 2
+        implied_equity = (
+            risk.approved_position_size_usd / risk.approved_position_size_pct
+            if risk.approved_position_size_pct > 0 else 0.0
+        )
+
+        if cost_per_lot * min_lots > risk.approved_position_size_usd:
+            # Budget can't cover min_lots. Check if cost is within the hard equity cap.
+            # Index options: 50% cap — premium paid IS the max loss (defined-risk), so
+            # a larger fraction is safe. Stock options stay at 40%.
+            equity_cap = 0.50 if underlying in _INDEX_UNDERLYINGS else 0.40
+            lot_pct_equity = (cost_per_lot * min_lots) / implied_equity if implied_equity > 0 else 1.0
+            if lot_pct_equity > equity_cap:
                 raise RuntimeError(
-                    f"Minimum lot cost ₹{cost_per_lot:.0f} ({lot_pct_equity:.0%} of equity) "
-                    f"exceeds 40% safety cap — skipping {underlying}"
+                    f"{min_lots} lots of {underlying} costs ₹{cost_per_lot * min_lots:.0f} "
+                    f"({lot_pct_equity:.0%} of equity) — exceeds {equity_cap:.0%} cap, skipping"
                 )
-            log.warning(
-                "OPTIONS raised to 1-lot minimum: %s ₹%.0f (%.1f%% of equity, kelly budget was ₹%.0f)",
-                underlying, cost_per_lot, lot_pct_equity * 100, risk.approved_position_size_usd,
+            raise RuntimeError(
+                f"Budget ₹{risk.approved_position_size_usd:.0f} too small for {underlying} "
+                f"(₹{cost_per_lot:.0f}/lot at {self._otm_strikes}-OTM strike {strike:.0f}) — "
+                f"add capital or reduce OTM strikes"
             )
-            num_lots = 1
-        else:
-            num_lots = max(1, int(risk.approved_position_size_usd / cost_per_lot))
+
+        num_lots = max(min_lots, int(risk.approved_position_size_usd / cost_per_lot))
 
         qty = num_lots * lot_size
 

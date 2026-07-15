@@ -44,6 +44,9 @@ class PositionMonitor:
         self._weights = weights_manager
         # symbol → timestamp of last SL failure (throttle retries)
         self._sl_fail_ts: dict[str, float] = {}
+        # symbol → timestamp of last successful SL placement (avoid re-placing
+        # while the order is still alive but not yet visible in get_open_orders)
+        self._sl_placed_ts: dict[str, float] = {}
         # symbol → entry price snapshot for P&L calculation on close
         self._entry_prices: dict[str, float] = {}
 
@@ -80,7 +83,7 @@ class PositionMonitor:
 
         # Fetch open orders once — detect existing active SL orders
         open_orders: list[dict] = []
-        if isinstance(self._broker, DhanBroker):
+        if isinstance(self._broker, DhanBroker) or hasattr(self._broker, "get_open_orders"):
             open_orders = await self._broker.get_open_orders()
 
         sl_covered: set[str] = set()
@@ -93,6 +96,14 @@ class PositionMonitor:
             qty = float(pos.get("qty", 0))
             avg_price = float(pos.get("avg_price", 0))
             if qty == 0 or avg_price == 0:
+                continue
+
+            # Options positions (symbol ends in -CE/-PE) are managed by
+            # options_router which places its own SL/TP at entry.  The 2%
+            # equity drawdown SL is meaningless for premium-based options;
+            # applying it would trigger a stop within normal intraday noise.
+            if symbol.endswith("-CE") or symbol.endswith("-PE"):
+                log.debug("Position monitor: skipping options position %s", symbol)
                 continue
 
             is_long = qty > 0
@@ -146,11 +157,20 @@ class PositionMonitor:
 
             # ── Place missing SL ──────────────────────────────────────────────
             if symbol in sl_covered:
+                # SL is confirmed live — reset the placed-timestamp so we'll
+                # detect and re-place if it disappears later.
+                self._sl_placed_ts.pop(symbol, None)
                 continue
 
             # Throttle retries — don't hammer Dhan if SL keeps failing
             last_fail = self._sl_fail_ts.get(symbol, 0)
             if time.time() - last_fail < SL_RETRY_COOLDOWN_SEC:
+                continue
+
+            # Don't re-place within 5 min of a successful submission — the order
+            # may still be live but not yet visible in get_open_orders (TRANSIT lag).
+            last_placed = self._sl_placed_ts.get(symbol, 0)
+            if time.time() - last_placed < SL_RETRY_COOLDOWN_SEC:
                 continue
 
             sl_price = avg_price * (1 - sl_pct) if is_long else avg_price * (1 + sl_pct)
@@ -251,6 +271,7 @@ class PositionMonitor:
                             ))
                 else:
                     self._sl_fail_ts.pop(symbol, None)
+                    self._sl_placed_ts[symbol] = time.time()
                     log.info("SL placed for %s @ %.2f", symbol, sl_price)
                     if self._alerts:
                         await self._alerts._broadcast(Alert(

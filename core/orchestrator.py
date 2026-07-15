@@ -6,11 +6,16 @@ agent pipeline → strategy filter → risk gate → execution → learning feed
 One Orchestrator instance per watched symbol. Run multiple concurrently for a portfolio.
 """
 import asyncio
+import datetime
 import logging
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
+
+# Global daily execution counter — shared across all Orchestrator instances in
+# the process. Keyed by ISO date string so it auto-resets each trading day.
+_global_daily_executions: dict[str, int] = {}
 
 import numpy as np
 
@@ -146,6 +151,7 @@ class Orchestrator:
         self._running = False
         self._cycle_count = 0
         self._last_signal: TradeSignal | None = None
+        self._last_executed_at: float = 0.0  # epoch seconds of last executed trade
         self._history: list[CycleResult] = []
         # Cache for index options context (PCR, ATM IV, IV skew, max pain, raw chain). 5-min TTL.
         self._opts_ctx: dict = {
@@ -400,67 +406,92 @@ class Orchestrator:
                          self.asset, signal.final_decision, strat_ok,
                          risk_result.is_tradeable(), _execute)
                 if _execute and risk_result.is_tradeable():
-                    size_mult = strategy.position_size_multiplier(signal, ctx)
-                    risk_result.approved_position_size_usd *= size_mult
-                    risk_result.approved_position_size_pct *= size_mult
-
-                    if use_options:
+                    # ── Frequency guards (brokerage cost = ₹20/order) ────────
+                    _now = time.time()
+                    _today = datetime.date.today().isoformat()
+                    _cooldown_remaining = settings.trade_cooldown_minutes * 60 - (_now - self._last_executed_at)
+                    _daily_count = _global_daily_executions.get(_today, 0)
+                    if _cooldown_remaining > 0:
                         log.info(
-                            "EXECUTING — %s %s | size=₹%.0f (%.1f%%) | sl=%d%% of premium | tp=2× risk (1:2 R:R)",
-                            self.asset, signal.action,
-                            risk_result.approved_position_size_usd,
-                            risk_result.approved_position_size_pct * 100,
-                            int(settings.options_sl_pct * 100),
+                            "COOLDOWN BLOCK — %s %.0f min remaining before next trade",
+                            self.asset, _cooldown_remaining / 60,
+                        )
+                    elif _daily_count >= settings.max_trades_per_day:
+                        log.info(
+                            "DAILY CAP BLOCK — %d/%d trades executed today, skipping %s",
+                            _daily_count, settings.max_trades_per_day, self.asset,
+                        )
+                    elif self.asset in self._portfolio.positions:
+                        log.info(
+                            "POSITION EXISTS — %s already in portfolio, skipping new entry",
+                            self.asset,
                         )
                     else:
-                        log.info(
-                            "EXECUTING — %s %s | size=₹%.0f (%.1f%%) | sl=₹%.2f | tp=₹%.2f",
-                            self.asset, signal.action,
-                            risk_result.approved_position_size_usd,
-                            risk_result.approved_position_size_pct * 100,
-                            risk_result.stop_loss_price, risk_result.take_profit_price,
-                        )
-                    try:
+                        size_mult = strategy.position_size_multiplier(signal, ctx)
+                        risk_result.approved_position_size_usd *= size_mult
+                        risk_result.approved_position_size_pct *= size_mult
+
                         if use_options:
-                            opt_router = OptionsRouter(
-                                broker=self._router._broker,
-                                market_data=self._data,
-                                otm_strikes=settings.options_otm_strikes,
-                                min_days_to_expiry=settings.options_min_days_to_expiry,
-                                sl_pct=settings.options_sl_pct,
-                            )
-                            # Pass cached chain so options router skips the re-fetch
-                            # (avoids Dhan rate-limit burst from back-to-back option_chain calls)
-                            prefetched = opts_ctx if opts_ctx.get("oc") else None
-                            result = await opt_router.execute(signal, risk_result, price, prefetched=prefetched)
-                            tp_str = f"TP₹{result['tp_premium']:.2f}" if result.get("tp_premium") else "TP=signal-exit"
                             log.info(
-                                "OPTIONS PLACED — %s %s %s | %d lots @ ₹%.2f | SL₹%.2f | %s | R:R %s | cost₹%.0f",
-                                self.asset, result["option"], result["expiry"],
-                                result["lots"], result["entry_premium"],
-                                result["sl_premium"], tp_str, result.get("rr", "1:2"), result["cost"],
+                                "EXECUTING — %s %s | size=₹%.0f (%.1f%%) | sl=%d%% of premium | tp=2× risk (1:2 R:R)",
+                                self.asset, signal.action,
+                                risk_result.approved_position_size_usd,
+                                risk_result.approved_position_size_pct * 100,
+                                int(settings.options_sl_pct * 100),
                             )
                         else:
-                            await self._router.execute_bracket(signal, risk_result, price)
-                        self._portfolio.open_trades += 1
-                        # Update in-memory exposure immediately so the risk engine
-                        # blocks over-allocation before the position monitor re-syncs.
-                        self._portfolio.positions[self.asset] = risk_result.approved_position_size_usd
-                        self._portfolio.cash = max(
-                            0.0, self._portfolio.cash - risk_result.approved_position_size_usd
-                        )
-                        executed = True
-                        log.info("ORDER PLACED — %s %s ₹%.0f @ %.2f", self.asset, signal.action, risk_result.approved_position_size_usd, price)
-                    except Exception as exc:
-                        log.exception("EXECUTION ERROR — %s %s: %s", self.asset, signal.action, exc)
+                            log.info(
+                                "EXECUTING — %s %s | size=₹%.0f (%.1f%%) | sl=₹%.2f | tp=₹%.2f",
+                                self.asset, signal.action,
+                                risk_result.approved_position_size_usd,
+                                risk_result.approved_position_size_pct * 100,
+                                risk_result.stop_loss_price, risk_result.take_profit_price,
+                            )
+                        try:
+                            if use_options:
+                                opt_router = OptionsRouter(
+                                    broker=self._router._broker,
+                                    market_data=self._data,
+                                    otm_strikes=settings.options_otm_strikes,
+                                    min_days_to_expiry=settings.options_min_days_to_expiry,
+                                    sl_pct=settings.options_sl_pct,
+                                )
+                                # Pass cached chain so options router skips the re-fetch
+                                # (avoids Dhan rate-limit burst from back-to-back option_chain calls)
+                                prefetched = opts_ctx if opts_ctx.get("oc") else None
+                                result = await opt_router.execute(signal, risk_result, price, prefetched=prefetched)
+                                tp_str = f"TP₹{result['tp_premium']:.2f}" if result.get("tp_premium") else "TP=signal-exit"
+                                log.info(
+                                    "OPTIONS PLACED — %s %s %s | %d lots @ ₹%.2f | SL₹%.2f | %s | R:R %s | cost₹%.0f",
+                                    self.asset, result["option"], result["expiry"],
+                                    result["lots"], result["entry_premium"],
+                                    result["sl_premium"], tp_str, result.get("rr", "1:2"), result["cost"],
+                                )
+                            else:
+                                await self._router.execute_bracket(signal, risk_result, price)
+                            self._portfolio.open_trades += 1
+                            # Update in-memory exposure immediately so the risk engine
+                            # blocks over-allocation before the position monitor re-syncs.
+                            self._portfolio.positions[self.asset] = risk_result.approved_position_size_usd
+                            self._portfolio.cash = max(
+                                0.0, self._portfolio.cash - risk_result.approved_position_size_usd
+                            )
+                            executed = True
+                            self._last_executed_at = _now
+                            _global_daily_executions[_today] = _daily_count + 1
+                            log.info("ORDER PLACED — %s %s ₹%.0f @ %.2f [trade %d/%d today]",
+                                     self.asset, signal.action, risk_result.approved_position_size_usd,
+                                     price, _daily_count + 1, settings.max_trades_per_day)
+                        except Exception as exc:
+                            log.exception("EXECUTION ERROR — %s %s: %s", self.asset, signal.action, exc)
 
-                    # Emit OrderPlaced
-                    await self._bus.publish("OrderPlaced", request_id, {
-                        "asset": self.asset,
-                        "side": signal.action.value if signal.action else "HOLD",
-                        "size_usd": risk_result.approved_position_size_usd,
-                        "price": price
-                    })
+                        # Emit OrderPlaced
+                        await self._bus.publish("OrderPlaced", request_id, {
+                            "asset": self.asset,
+                            "side": signal.action.value if signal.action else "HOLD",
+                            "size_usd": risk_result.approved_position_size_usd,
+                            "price": price
+                        })
                 elif _execute and not risk_result.is_tradeable():
                     log.info("EXEC SKIP (risk) — %s | status=%s reasons=%s", self.asset, risk_result.status.value, risk_result.rejection_reasons)
 

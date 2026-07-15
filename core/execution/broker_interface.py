@@ -18,11 +18,7 @@ from core.agents.base_agent import Signal
 from core.agents.meta_agent import TradeSignal
 from core.risk.risk_engine import RiskCheckResult
 
-try:
-    import alpaca_trade_api as _alpaca_trade_api
-    _ALPACA_AVAILABLE = True
-except ImportError:
-    _ALPACA_AVAILABLE = False
+import httpx as _httpx
 
 try:
     import dhanhq as _dhanhq
@@ -108,108 +104,159 @@ class BrokerAdapter(ABC):
 
 
 class AlpacaBroker(BrokerAdapter):
-    """Alpaca paper/live trading adapter."""
+    """
+    Alpaca paper/live trading adapter.
+    Uses httpx directly — no alpaca-trade-api SDK dependency (which conflicts
+    with google-genai's websockets requirement).
+    """
 
     def __init__(self, api_key: str, secret_key: str, base_url: str):
-        if not _ALPACA_AVAILABLE:
-            raise RuntimeError(
-                "alpaca-trade-api is not installed — add it to requirements.txt "
-                "or unset ALPACA_API_KEY to use PaperBroker instead."
-            )
-        self._api = _alpaca_trade_api.REST(api_key, secret_key, base_url)
+        self._base = base_url.rstrip("/")
+        self._headers = {
+            "APCA-API-KEY-ID": api_key,
+            "APCA-API-SECRET-KEY": secret_key,
+        }
+        self._http = _httpx.AsyncClient(
+            headers=self._headers,
+            timeout=15.0,
+        )
 
     async def submit_order(self, order: Order) -> Order:
-        loop = asyncio.get_event_loop()
-        # Alpaca rejects market orders that include limit_price/stop_price
-        limit_price = order.limit_price if order.order_type in (OrderType.LIMIT, OrderType.STOP_LIMIT) else None
-        stop_price = order.stop_price if order.order_type in (OrderType.STOP, OrderType.STOP_LIMIT) else None
+        qty_val = order.quantity
+        # Use decimal formatting for fractional quantities (crypto) — Alpaca accepts these.
+        # Cap at 6 decimal places to avoid float precision issues where the 8th+ decimal
+        # rounds up past the available balance (e.g., 0.86421605 > 0.864216045 available).
+        if qty_val >= 1 and qty_val == int(qty_val):
+            qty_str = str(int(qty_val))
+        else:
+            qty_str = f"{qty_val:.6f}".rstrip("0").rstrip(".")
+        payload: dict[str, Any] = {
+            "symbol": order.asset,
+            "qty": qty_str,
+            "side": order.side,
+            "type": order.order_type.value,
+            "time_in_force": "gtc",
+        }
+        if order.order_type in (OrderType.LIMIT, OrderType.STOP_LIMIT) and order.limit_price:
+            payload["limit_price"] = f"{order.limit_price:.2f}"
+        if order.order_type in (OrderType.STOP, OrderType.STOP_LIMIT) and order.stop_price:
+            payload["stop_price"] = f"{order.stop_price:.2f}"
         try:
-            result = await loop.run_in_executor(
-                None,
-                lambda: self._api.submit_order(
-                    symbol=order.asset,
-                    qty=order.quantity,
-                    side=order.side,
-                    type=order.order_type.value,
-                    time_in_force="gtc",
-                    limit_price=limit_price,
-                    stop_price=stop_price,
-                )
-            )
-            order.broker_order_id = result.id
-            order.status = OrderStatus.SUBMITTED
+            resp = await self._http.post(f"{self._base}/v2/orders", json=payload)
+            data = resp.json()
+            if resp.status_code in (200, 201):
+                order.broker_order_id = data.get("id", "")
+                order.status = OrderStatus.SUBMITTED
+                log.info("ALPACA ORDER — %s %s %s qty=%s → id=%s status=%s",
+                         order.side.upper(), order.order_type.value.upper(), order.asset,
+                         order.quantity, order.broker_order_id, data.get("status"))
+            else:
+                raise RuntimeError(data.get("message") or str(data))
         except Exception as e:
             order.status = OrderStatus.REJECTED
             order.metadata["error"] = str(e)
+            log.error("ALPACA ORDER REJECTED — %s: %s", order.asset, e)
         return order
 
     async def cancel_order(self, order_id: str) -> bool:
-        loop = asyncio.get_event_loop()
         try:
-            await loop.run_in_executor(None, lambda: self._api.cancel_order(order_id))
-            return True
+            resp = await self._http.delete(f"{self._base}/v2/orders/{order_id}")
+            return resp.status_code in (200, 204)
         except Exception:
             return False
 
     async def get_order_status(self, order_id: str) -> Order:
-        loop = asyncio.get_event_loop()
-        raw = await loop.run_in_executor(None, lambda: self._api.get_order(order_id))
-        order = Order(broker_order_id=raw.id, asset=raw.symbol)
-        order.status = OrderStatus(raw.status)
-        order.filled_qty = float(raw.filled_qty or 0)
-        order.avg_fill_price = float(raw.filled_avg_price or 0)
-        order.side = "buy" if str(getattr(raw, "side", "")).lower() == "buy" else "sell"
-        order.quantity = float(getattr(raw, "qty", 0) or 0)
+        resp = await self._http.get(f"{self._base}/v2/orders/{order_id}")
+        resp.raise_for_status()
+        data = resp.json()
+        order = Order(broker_order_id=data["id"], asset=data["symbol"])
+        order.status = OrderStatus.SUBMITTED
+        order.filled_qty = float(data.get("filled_qty") or 0)
+        order.avg_fill_price = float(data.get("filled_avg_price") or 0)
+        order.side = data.get("side", "buy")
+        order.quantity = float(data.get("qty") or 0)
         return order
 
     async def cancel_orders_for_symbol(self, symbol: str) -> int:
-        """Cancel all open orders for a symbol before submitting a close."""
-        loop = asyncio.get_event_loop()
         try:
-            orders = await loop.run_in_executor(None, lambda: self._api.list_orders(status="open"))
-            sym_orders = [o for o in orders if o.symbol == symbol]
+            resp = await self._http.get(f"{self._base}/v2/orders", params={"status": "open", "limit": 200})
+            resp.raise_for_status()
+            orders = resp.json()
+            # Normalize: Alpaca returns "BTC/USD", we may receive "BTCUSD"
+            sym_norm = symbol.replace("/", "")
+            sym_orders = [o for o in orders if o.get("symbol", "").replace("/", "") == sym_norm]
             for o in sym_orders:
-                await loop.run_in_executor(None, lambda oid=o.id: self._api.cancel_order(oid))
+                await self._http.delete(f"{self._base}/v2/orders/{o['id']}")
             return len(sym_orders)
         except Exception:
             return 0
 
     async def close_position_native(self, symbol: str) -> Order:
-        """Cancel all open orders for the symbol, then close the position via Alpaca's native endpoint."""
-        loop = asyncio.get_event_loop()
         order = Order(asset=symbol, side="sell", order_type=OrderType.MARKET)
-        # Normalize: Alpaca may store as "BTC/USD" while we use "BTCUSD"
-        normalized = symbol.replace("/", "").replace("-", "")
         try:
-            # Cancel all open orders for this symbol to free locked inventory
-            open_orders = await loop.run_in_executor(None, lambda: self._api.list_orders(status="open"))
-            for o in open_orders:
-                if o.symbol.replace("/", "").replace("-", "") == normalized:
-                    try:
-                        await loop.run_in_executor(None, lambda oid=o.id: self._api.cancel_order(oid))
-                    except Exception:
-                        pass
-            # Small delay for cancellations to propagate
-            await asyncio.sleep(1.0)
-            result = await loop.run_in_executor(None, lambda: self._api.close_position(symbol))
-            order.broker_order_id = result.id
+            await self.cancel_orders_for_symbol(symbol)
+            await asyncio.sleep(0.5)
+            resp = await self._http.delete(f"{self._base}/v2/positions/{symbol}")
+            resp.raise_for_status()
+            data = resp.json()
+            order.broker_order_id = data.get("id", "")
             order.status = OrderStatus.SUBMITTED
-            order.filled_qty = float(result.filled_qty or 0)
-            order.avg_fill_price = float(result.filled_avg_price or 0)
+            order.filled_qty = float(data.get("filled_qty") or 0)
+            order.avg_fill_price = float(data.get("filled_avg_price") or 0)
         except Exception as e:
             order.status = OrderStatus.REJECTED
             order.metadata["error"] = str(e)
         return order
 
     async def get_positions(self) -> dict[str, Any]:
-        loop = asyncio.get_event_loop()
-        positions = await loop.run_in_executor(None, self._api.list_positions)
-        return {p.symbol: {"qty": float(p.qty), "value": float(p.market_value)} for p in positions}
+        resp = await self._http.get(f"{self._base}/v2/positions")
+        resp.raise_for_status()
+        positions = resp.json()
+        return {
+            p["symbol"].replace("/", ""): {  # normalize "BTC/USD" → "BTCUSD"
+                "qty": float(p["qty"]),
+                "avg_price": float(p.get("avg_entry_price") or 0),
+                "value": float(p.get("market_value") or 0),
+                "exchange": "ALPACA",
+            }
+            for p in positions
+        }
 
     async def get_account(self) -> dict[str, Any]:
-        loop = asyncio.get_event_loop()
-        acc = await loop.run_in_executor(None, self._api.get_account)
-        return {"equity": float(acc.equity), "cash": float(acc.cash), "buying_power": float(acc.buying_power)}
+        resp = await self._http.get(f"{self._base}/v2/account")
+        resp.raise_for_status()
+        data = resp.json()
+        return {
+            "equity": float(data["equity"]),
+            "cash": float(data["cash"]),
+            "buying_power": float(data["buying_power"]),
+        }
+
+    async def get_open_orders(self) -> list[dict]:
+        # Map Alpaca types/statuses to Dhan-style names expected by position_monitor.
+        _type_map = {
+            "stop_limit": "STOP_LOSS", "stop": "STOP_LOSS_MARKET",
+            "limit": "LIMIT", "market": "MARKET",
+        }
+        _status_map = {
+            "new": "PENDING", "accepted": "PENDING", "held": "PENDING",
+            "pending_new": "TRANSIT", "partially_filled": "PART_TRADED",
+        }
+        try:
+            resp = await self._http.get(f"{self._base}/v2/orders", params={"status": "open", "limit": 200})
+            resp.raise_for_status()
+            orders = resp.json()
+            return [
+                {
+                    "orderType": _type_map.get(o.get("type", "").lower(), o.get("type", "").upper()),
+                    "orderStatus": _status_map.get(o.get("status", "").lower(), o.get("status", "").upper()),
+                    "tradingSymbol": o.get("symbol", "").replace("/", ""),
+                    "orderId": o.get("id", ""),
+                }
+                for o in orders
+            ]
+        except Exception:
+            return []
 
 
 class PaperBroker(BrokerAdapter):
@@ -617,11 +664,18 @@ class SmartOrderRouter:
         lot_size = 1
         try:
             _, _entry_exch, _ = self._broker._resolve_instrument(signal.asset)
+            if _entry_exch == "IDX_I":
+                raise RuntimeError(
+                    f"{signal.asset} is a spot index (IDX_I) — cannot be traded directly. "
+                    "Use options or futures mode for index instruments."
+                )
             if _entry_exch == "MCX_COMM":
                 from core.data.instruments import scrip_master as _sm
                 _ls = _sm.fno_lot_size(signal.asset)
                 if _ls > 1:
                     lot_size = _ls
+        except RuntimeError:
+            raise
         except Exception:
             pass
 
@@ -643,12 +697,14 @@ class SmartOrderRouter:
         else:
             qty = risk.approved_position_size_usd / current_price
 
+        # Use MARKET entry — LIMIT+30s-poll+MARKET-fallback was placing 2 charged
+        # orders per trade (LIMIT placed → never fills in illiquid MCX contracts →
+        # MARKET fallback). MARKET entry costs 1 order instead of 2.
         entry = Order(
             asset=signal.asset,
             side=side,
             quantity=round(qty, 6),
-            order_type=OrderType.LIMIT,
-            limit_price=round(entry_limit, 6),
+            order_type=OrderType.MARKET,
             metadata={"signal_id": signal.request_id, "strategy": "consensus"},
         )
 
@@ -657,48 +713,30 @@ class SmartOrderRouter:
         if entry.status == OrderStatus.REJECTED:
             raise RuntimeError(f"Entry order rejected: {entry.metadata.get('error', 'unknown')}")
 
-        # Wait for fill or timeout → fallback to market
-        # Save side/qty before the polling loop because get_order_status() returns
-        # a fresh Order with side="" and quantity=0 — if we use that object for the
-        # MARKET resubmit, every BUY limit timeout silently becomes a SELL market.
-        _saved_side = entry.side
-        _saved_qty = entry.quantity
-        _saved_meta = dict(entry.metadata)
-        if entry.status == OrderStatus.SUBMITTED:
-            deadline = time.time() + self._timeout
-            while time.time() < deadline:
-                await asyncio.sleep(2)
-                poll = await self._broker.get_order_status(entry.broker_order_id)
-                if poll.status == OrderStatus.FILLED:
-                    entry = poll
-                    break
-                if poll.status == OrderStatus.PARTIAL:
-                    # Partial fill received — cancel the remainder and proceed with
-                    # what filled. SL/TP will be sized to filled_qty below.
-                    log.warning(
-                        "PARTIAL fill for %s — %.0f of %.0f filled; cancelling remainder",
-                        signal.asset, poll.filled_qty, _saved_qty,
-                    )
-                    await self._broker.cancel_order(entry.broker_order_id)
-                    entry = poll
-                    break
-            else:
-                # Timeout — cancel LIMIT and resubmit as MARKET with original side/qty
-                await self._broker.cancel_order(entry.broker_order_id)
-                fallback = Order(
-                    asset=entry.asset,
-                    side=_saved_side,
-                    quantity=_saved_qty,
-                    order_type=OrderType.MARKET,
-                    metadata=_saved_meta,
-                )
-                entry = await self._broker.submit_order(fallback)
+        # MARKET orders confirm on submission; Dhan returns filled_qty=0 until the
+        # next poll, so fall back to the calculated qty and signal price for SL/TP sizing.
+        # For Alpaca, poll after 1s to get the actual fill qty (avoids "insufficient balance"
+        # when the SL qty slightly exceeds what was filled after fees).
+        if isinstance(self._broker, AlpacaBroker) and entry.broker_order_id:
+            # Poll up to 3× for fill qty — crypto paper orders fill within a few seconds.
+            for _poll in range(3):
+                await asyncio.sleep(1)
+                try:
+                    _filled = await self._broker.get_order_status(entry.broker_order_id)
+                    if _filled.filled_qty > 0:
+                        entry.filled_qty = _filled.filled_qty
+                        entry.avg_fill_price = _filled.avg_fill_price or entry.avg_fill_price
+                        break
+                except Exception:
+                    pass
 
-        # After market fallback, submit_order() returns an Order with filled_qty=0
-        # and avg_fill_price=0 because Dhan only confirms orderId on submission.
-        # Fall back to the saved quantity and use the signal's current_price so
-        # SL/TP cover the full position, not Dhan's minimum lot of 1.
-        _fill_qty = entry.filled_qty if entry.filled_qty > 0 else _saved_qty
+        # Alpaca crypto commissions (~0.25%) reduce actual fill below the calculated qty.
+        # Apply a 0.3% haircut to the fallback qty so the SL never exceeds available balance.
+        _fill_qty = (
+            entry.filled_qty
+            if entry.filled_qty > 0
+            else round(qty * 0.997, 6)
+        )
         fill_price = entry.avg_fill_price or current_price
 
         # Stop loss — mandatory. If it fails we close the position immediately
@@ -721,24 +759,57 @@ class SmartOrderRouter:
         except Exception:
             pass
 
+        # Alpaca crypto doesn't support plain STOP orders — use STOP_LIMIT for both directions.
+        _is_alpaca = isinstance(self._broker, AlpacaBroker)
         if sl_side == "buy":
             sl_order_type = OrderType.STOP_LIMIT
             sl_limit = round(sl_trigger * 1.002, 2)
+        elif _is_alpaca:
+            sl_order_type = OrderType.STOP_LIMIT
+            sl_limit = round(sl_trigger * 0.995, 2)  # 0.5% below trigger to guarantee fill
         else:
             sl_order_type = OrderType.STOP
             sl_limit = None
-        sl = Order(
-            asset=signal.asset,
-            side=sl_side,
-            quantity=_fill_qty,
-            order_type=sl_order_type,
-            stop_price=sl_trigger,
-            limit_price=sl_limit,
-            metadata={"type": "stop_loss", "parent": entry.id},
-        )
-        sl = await self._broker.submit_order(sl)
-        if sl.status == OrderStatus.REJECTED:
-            log.error("SL order rejected for %s — closing position to avoid naked exposure", signal.asset)
+        # SL placement with retry — avoids the buy+immediate-close pattern that
+        # wastes ₹40 brokerage with zero market PnL. Three attempts:
+        #   1. Original trigger price
+        #   2. Retry after 2s (clears transient API errors)
+        #   3. Widen trigger 0.5% after another 2s (clears price-band rejections)
+        # Emergency close only fires if all three fail.
+        sl = None
+        _sl_trigger_try = sl_trigger
+        for _attempt in range(3):
+            if sl_side == "buy":
+                _sl_limit_try = round(_sl_trigger_try * 1.002, 2)
+            elif sl_order_type == OrderType.STOP_LIMIT:
+                # Alpaca crypto sell SL: limit below trigger to guarantee fill
+                _sl_limit_try = round(_sl_trigger_try * 0.995, 2)
+            else:
+                _sl_limit_try = None
+            _sl_candidate = Order(
+                asset=signal.asset,
+                side=sl_side,
+                quantity=_fill_qty,
+                order_type=sl_order_type,
+                stop_price=_sl_trigger_try,
+                limit_price=_sl_limit_try if sl_order_type == OrderType.STOP_LIMIT else sl_limit,
+                metadata={"type": "stop_loss", "parent": entry.id},
+            )
+            sl = await self._broker.submit_order(_sl_candidate)
+            if sl.status != OrderStatus.REJECTED:
+                break
+            log.warning("SL attempt %d/3 rejected for %s — %s",
+                        _attempt + 1, signal.asset, sl.metadata.get("error", ""))
+            if _attempt < 2:
+                await asyncio.sleep(2)
+            if _attempt == 1:
+                # Widen trigger 0.5% away from fill to escape circuit-band rejection
+                _sl_trigger_try = round(
+                    sl_trigger * 0.995 if sl_side == "sell" else sl_trigger * 1.005, 2
+                )
+
+        if sl is None or sl.status == OrderStatus.REJECTED:
+            log.error("SL failed after 3 attempts for %s — closing position to avoid naked exposure", signal.asset)
             try:
                 close = Order(asset=signal.asset, side=sl_side, quantity=_fill_qty, order_type=OrderType.MARKET)
                 await self._broker.submit_order(close)

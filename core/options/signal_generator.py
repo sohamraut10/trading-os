@@ -118,7 +118,7 @@ class OptionsAnalysisAgent(BaseAgent):
     async def _run_pipeline(self, ctx: MarketContext, asset: str) -> AgentDecision:
         # ── 1. Expiry context ─────────────────────────────────────────────────
         expiry_info = self._expiry_engine.get_info(asset)
-        if expiry_info.is_expiry_day:
+        if expiry_info.is_expiry_today:
             return self._hold_decision(
                 "Expiry day — no new options entries (gamma risk)",
                 indicators={"expiry_day": True, **expiry_info.to_dict()},
@@ -143,6 +143,18 @@ class OptionsAnalysisAgent(BaseAgent):
 
         if self._broker is not None:
             chain_summary = await self._fetch_chain(asset, expiry_str, ctx.current_price)
+
+        # Without real chain data the agent can only produce a synthetic estimate
+        # from iv_rank — that estimate conflicts with directional agents (e.g. it
+        # generated a spurious BUY on SENSEX while Technical was SELL), so we
+        # abstain entirely when the broker returned an empty chain.
+        # chain_analyzer always returns a ChainSummary; empty one has atm_strike=0.
+        chain_has_data = chain_summary is not None and chain_summary.atm_strike > 0
+        if self._broker is not None and not chain_has_data:
+            return self._hold_decision(
+                f"Options agent: no live chain data for {asset} — abstaining",
+                indicators={"chain_unavailable": True, "expiry": expiry_info.to_dict()},
+            )
 
         # ── 4. Volatility snapshot ────────────────────────────────────────────
         vol_engine = self._vol_engines.setdefault(asset, VolatilityEngine())
@@ -182,19 +194,24 @@ class OptionsAnalysisAgent(BaseAgent):
         )
 
         # ── 6. Strategy selection ─────────────────────────────────────────────
+        # Use DTE of recommended_expiry, not days_to_weekly — when weekly is too
+        # close (DTE=0-2), recommended_expiry steps to monthly, so strategy
+        # selection should reflect that longer DTE, not the expiring weekly.
+        from datetime import date as _dt
+        recommended_dte = (expiry_info.recommended_expiry - _dt.today()).days
         sell_prem = VolatilityEngine.should_sell_premium(vol_snap)
         buy_prem = VolatilityEngine.should_buy_premium(vol_snap)
         best_strategy = self._strategy_mgr.best(
             primary_regime=regime.primary,
             iv_regime=iv_regime_str,
-            dte=expiry_info.days_to_weekly,
+            dte=recommended_dte,
             sell_premium=sell_prem,
             buy_premium=buy_prem,
         )
 
         if best_strategy is None:
             return self._hold_decision(
-                f"No suitable strategy for regime={regime.primary}, iv={iv_regime_str}, dte={expiry_info.days_to_weekly}",
+                f"No suitable strategy for regime={regime.primary}, iv={iv_regime_str}, dte={recommended_dte}",
                 indicators={
                     "regime": regime.to_dict(),
                     "vol_snap": vol_snap.to_dict(),
@@ -304,21 +321,31 @@ class OptionsAnalysisAgent(BaseAgent):
     # ── IO helpers ────────────────────────────────────────────────────────────
 
     async def _fetch_vix(self, asset: str) -> float:
-        """Fetch India VIX from market data provider. Fallback to 20."""
-        try:
-            if self._market_data:
-                vix_price = await self._market_data.get_current_price("INDIAVIX")
-                if vix_price and vix_price > 0:
-                    return float(vix_price)
-        except Exception as exc:
-            log.debug("VIX fetch failed: %s — using default 20", exc)
-        return 20.0
+        """Fetch India VIX from market data provider. Fallback to 15 (normal regime)."""
+        for sym in ("INDIA VIX", "INDIAVIX", "VIX"):
+            try:
+                if self._market_data:
+                    vix_price = await self._market_data.get_current_price(sym)
+                    if vix_price and vix_price > 0:
+                        log.debug("India VIX fetched via '%s': %.2f", sym, vix_price)
+                        return float(vix_price)
+            except Exception:
+                pass
+        log.debug("VIX fetch failed for all symbols — using conservative default 15")
+        return 15.0
 
     async def _fetch_chain(
         self, underlying: str, expiry: str, spot: float
     ) -> Any:
-        """Fetch and parse option chain from Dhan broker."""
+        """Fetch and parse option chain from Dhan broker.
+
+        Uses Dhan's expiry_list to get the actual exchange-traded expiry date,
+        since ExpiryEngine computes dates theoretically and they may not match
+        (e.g. SENSEX on BSE uses 2026-07-23 while the engine might compute
+        2026-07-24 or 2026-07-25).
+        """
         try:
+            from datetime import date as _date
             from core.data.instruments import scrip_master
             inst = scrip_master.resolve(underlying)
             if not inst:
@@ -327,6 +354,25 @@ class OptionsAnalysisAgent(BaseAgent):
             exch = inst.exchange
 
             loop = asyncio.get_event_loop()
+
+            # Resolve actual expiry from broker to avoid date-mismatch empty chains.
+            try:
+                raw_exp = await loop.run_in_executor(
+                    None, lambda: self._broker._dhan.expiry_list(sid, exch)
+                )
+                expiries: list[str] = (raw_exp.get("data", {}) or {}).get("data", []) or []
+                today = _date.today()
+                for exp_str in sorted(expiries):
+                    try:
+                        exp_date = _date.fromisoformat(exp_str[:10])
+                        if (exp_date - today).days >= 2:
+                            expiry = exp_str[:10]
+                            break
+                    except ValueError:
+                        continue
+            except Exception as exc:
+                log.debug("expiry_list failed for %s (%s) — using computed %s", underlying, exc, expiry)
+
             raw = await loop.run_in_executor(
                 None,
                 lambda: self._broker._dhan.option_chain(sid, exch, expiry),

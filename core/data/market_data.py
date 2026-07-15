@@ -110,14 +110,25 @@ class BinanceProvider(MarketDataProvider):
     """Binance — crypto spot, falling back to Yahoo Finance for Forex currency pairs."""
 
     BASE = "https://api.binance.com"
-    FOREX_PAIRS = {"EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "EURGBP", "EURJPY"}
+    FOREX_PAIRS = {"EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "EURGBP", "EURJPY",
+                   "NZDUSD", "USDCHF", "EURGBP", "CADJPY", "AUDNZD"}
+
+    # Binance uses USDT pairs; map USD-suffixed crypto symbols to USDT equivalents
+    _USD_TO_USDT = {
+        "BTCUSD": "BTCUSDT", "ETHUSD": "ETHUSDT", "SOLUSD": "SOLUSDT",
+        "AVAXUSD": "AVAXUSDT", "DOGEUSD": "DOGEUSDT", "LINKUSD": "LINKUSDT",
+        "BNBUSD": "BNBUSDT", "ADAUSD": "ADAUSDT", "XRPUSD": "XRPUSDT",
+        "DOTUSD": "DOTUSDT", "MATICUSD": "MATICUSDT", "LTCUSD": "LTCUSDT",
+        "UNIUSD": "UNIUSDT", "ATOMUSD": "ATOMUSDT", "ALGOUSD": "ALGOUSDT",
+    }
 
     def __init__(self, api_key: str = "", secret: str = ""):
         self.api_key = api_key
         self.secret = secret
 
     def _normalize_symbol(self, symbol: str) -> str:
-        return symbol.replace("/", "").replace("-", "").replace("=", "").upper()
+        sym = symbol.replace("/", "").replace("-", "").replace("=", "").upper()
+        return self._USD_TO_USDT.get(sym, sym)
 
     async def get_candles(self, symbol: str, timeframe: str, limit: int = 300) -> list[OHLCV]:
         symbol = self._normalize_symbol(symbol)

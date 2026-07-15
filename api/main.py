@@ -57,6 +57,7 @@ def _build_broker():
                 client_id=settings.dhan_client_id,
                 access_token=settings.dhan_access_token,
                 default_exchange=settings.dhan_default_exchange,
+                product_type=settings.dhan_product_type,
             )
         except Exception as e:
             if settings.environment == "production":
@@ -391,6 +392,25 @@ async def lifespan(app: FastAPI):
     except Exception:
         log.warning("Could not sync open_trades from broker at startup — defaulting to 0")
         state.portfolio.open_trades = 0
+
+    # Always pull real equity/cash from Dhan fund limits — the hardcoded
+    # ₹1,00,000 default and DB snapshots both lag behind actual account balance.
+    try:
+        account = await state.broker.get_account()
+        dhan_equity = account.get("equity", 0.0)
+        dhan_cash = account.get("cash", 0.0)
+        if dhan_equity > 0:
+            state.portfolio.equity = dhan_equity
+            state.portfolio.cash = dhan_cash
+            log.info(
+                "Synced portfolio from Dhan fund limits: equity=₹%.2f  cash=₹%.2f",
+                dhan_equity, dhan_cash,
+            )
+    except Exception:
+        log.warning(
+            "Could not fetch Dhan fund limits at startup — equity stays at ₹%.2f",
+            state.portfolio.equity,
+        )
 
     # There's no persistent process to run this loop in on serverless
     # platforms (e.g. Vercel sets VERCEL=1) — a Vercel Cron hitting
