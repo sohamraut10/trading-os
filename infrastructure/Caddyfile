@@ -121,6 +121,23 @@
         }
     }
 
+    # ── Fable — fable.DOMAIN ────────────────────────────────────────────────
+    @fable host fable.{$DOMAIN}
+    handle @fable {
+        encode gzip zstd
+        header {
+            # Allow microphone for Web Speech API voice input
+            Permissions-Policy      "microphone=(self)"
+            X-Frame-Options         "DENY"
+            X-Content-Type-Options  "nosniff"
+        }
+        reverse_proxy fable:3000 {
+            health_uri      /
+            health_interval 30s
+            health_timeout  5s
+        }
+    }
+
     # ── Catch-all: reject unknown hosts ─────────────────────────────────────
     handle {
         respond "Not found" 404

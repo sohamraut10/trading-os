@@ -70,6 +70,8 @@ services:
         condition: service_healthy
       api:
         condition: service_healthy
+      fable:
+        condition: service_healthy
 
   # ── Frontend — nginx serving Vite build ─────────────────────────────────────
   frontend:
@@ -107,6 +109,8 @@ services:
       dockerfile: infrastructure/Dockerfile
     platform: linux/arm64
     <<: *restart
+    ports:
+      - "8000:8000"
     networks:
       - frontend
       - backend
@@ -282,7 +286,54 @@ services:
           memory: 256M
     logging: *default-logging
 
-  # ── Cloudflare Tunnel ────────────────────────────────────────────────────────
+  # ── Fable — voice-first finance assistant (Next.js) ─────────────────────��───
+  fable:
+    build:
+      context: ../fable
+      dockerfile: Dockerfile
+    platform: linux/arm64
+    <<: *restart
+    ports:
+      - "3001:3000"
+    networks:
+      - frontend
+      - backend
+    environment:
+      NODE_ENV: production
+      # Reaches trading OS on the internal Docker network
+      TRADING_OS_URL: http://api:8000
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-6}
+      FABLE_CLAUDE_MODEL: claude-sonnet-4-6
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      FABLE_BACKENDS: api-gemini,cli-claude
+      TTS_VOICE: Samantha
+      TTS_RATE: "200"
+      FABLE_ACCESS_TOKEN: ${FABLE_ACCESS_TOKEN}
+      OMEGA_API_URL: http://host.docker.internal:8003
+      OMEGA_API_TOKEN: ${OMEGA_API_TOKEN}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Mount host Claude Code auth so the CLI works inside the container
+      - ${HOME}/.claude:/home/node/.claude
+      - ${HOME}/.claude.json:/home/node/.claude.json
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    logging: *default-logging
+
+  # ── Cloudflare Tunnel ────────────────────────────────────────��───────────────
   cloudflared:
     image: cloudflare/cloudflared:latest
     platform: linux/arm64

@@ -304,16 +304,21 @@ _MCX_KEYWORDS = frozenset({
 def _is_asset_live(asset: str) -> bool:
     """
     Return True if the asset's exchange is currently open for trading.
-    - NSE equity / F&O / indices: Mon–Fri 09:15–15:30 IST
-    - MCX commodities:            Mon–Fri 09:00–23:30 IST
+    - Crypto / forex (USD/BTC/ETH/JPY etc.): always live (24/7)
+    - MCX commodities:                        Mon–Fri 09:00–23:30 IST
+    - NSE equity / F&O / indices:             Mon–Fri 09:15–15:30 IST
     """
     from datetime import time as _time
+    # Crypto and forex trade 24/7 — detect by currency suffix
+    _sym = asset.upper().replace("/", "").replace("-", "")
+    _fx_sfx = ("USD", "USDT", "BTC", "ETH", "JPY", "EUR", "GBP", "CHF", "AUD", "CAD", "NZD")
+    is_mcx = scrip_master.is_mcx(asset) or asset.upper() in _MCX_KEYWORDS
+    if not is_mcx and any(_sym.endswith(sfx) for sfx in _fx_sfx):
+        return True
     now = _ist_now()
     if now.weekday() >= 5:          # Saturday=5, Sunday=6
         return False
     t = now.time()
-    # is_mcx requires scrip_master loaded; fall back to keyword set if not
-    is_mcx = scrip_master.is_mcx(asset) or asset.upper() in _MCX_KEYWORDS
     if is_mcx:
         return _time(9, 0) <= t <= _time(23, 30)
     return _time(9, 15) <= t <= _time(15, 30)
@@ -350,10 +355,15 @@ async def live_suggestions_loop():
         assets = [a.strip() for a in settings.live_suggestions_assets.split(",") if a.strip()]
         log.info("Watchlist scan: %d assets", len(assets))
         while True:
+            ran_any = False
             for asset in assets:
                 if not _is_asset_live(asset):
                     continue
+                ran_any = True
                 await run_consensus_cycle(asset, timeframe="1h", candle_limit=300, execute_if_signal=settings.auto_execute_signals)
+                await asyncio.sleep(settings.live_suggestions_interval_sec)
+            if not ran_any:
+                # All assets skipped (market closed) — sleep to avoid busy loop
                 await asyncio.sleep(settings.live_suggestions_interval_sec)
 
 
@@ -550,11 +560,17 @@ async def root():
 
 @app.get("/health")
 async def health():
+    equity = state.portfolio.equity  # fast fallback — never throws
+    try:
+        account = await state.broker.get_account()
+        equity = account.get("equity", equity)
+    except Exception:
+        pass
     return {
         "status": "ok",
         "timestamp": time.time(),
         "version": "1.0.0",
-        "portfolio_equity": (await state.broker.get_account())["equity"],
+        "portfolio_equity": equity,
     }
 
 

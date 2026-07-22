@@ -1,0 +1,10 @@
+{
+  "description": "Experience seamless personal finance management with an intuitive voice-first AI assistant that guides users through budgeting and financial decisions.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

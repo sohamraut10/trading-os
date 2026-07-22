@@ -426,6 +426,14 @@ class Orchestrator:
                             "POSITION EXISTS — %s already in portfolio, skipping new entry",
                             self.asset,
                         )
+                    elif (
+                        signal.action == "SELL"
+                        and self.asset not in self._portfolio.positions
+                    ):
+                        log.info(
+                            "NO SHORT — %s has no existing long position, skipping SELL signal",
+                            self.asset,
+                        )
                     else:
                         size_mult = strategy.position_size_multiplier(signal, ctx)
                         risk_result.approved_position_size_usd *= size_mult

@@ -30,4 +30,13 @@ ingress:
       keepAliveConnections: 100
       httpHostHeader: grafana.mu3en.diy
 
+  - hostname: fable.mu3en.diy
+    service: http://caddy:80
+    originRequest:
+      connectTimeout: 10s
+      tcpKeepAlive: 30s
+      keepAliveTimeout: 90s
+      keepAliveConnections: 100
+      httpHostHeader: fable.mu3en.diy
+
   - service: http_status:404

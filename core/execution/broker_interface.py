@@ -123,13 +123,14 @@ class AlpacaBroker(BrokerAdapter):
 
     async def submit_order(self, order: Order) -> Order:
         qty_val = order.quantity
-        # Use decimal formatting for fractional quantities (crypto) — Alpaca accepts these.
-        # Cap at 6 decimal places to avoid float precision issues where the 8th+ decimal
-        # rounds up past the available balance (e.g., 0.86421605 > 0.864216045 available).
+        # Always FLOOR to 6 decimal places — never round up past the available balance.
+        # e.g. 194.240922645 → 194.240922 (not 194.240923 which exceeds holding).
+        import math as _math
         if qty_val >= 1 and qty_val == int(qty_val):
             qty_str = str(int(qty_val))
         else:
-            qty_str = f"{qty_val:.6f}".rstrip("0").rstrip(".")
+            qty_floor = _math.floor(qty_val * 1_000_000) / 1_000_000
+            qty_str = f"{qty_floor:.6f}".rstrip("0").rstrip(".")
         payload: dict[str, Any] = {
             "symbol": order.asset,
             "qty": qty_str,

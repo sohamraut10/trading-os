@@ -1,0 +1,105 @@
+@import url('https://fonts.googleapis.com/css2?family=Michroma&family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
+@import 'tailwindcss';
+
+:root {
+  --bg: #05050D;
+  --idle: #5B8CFF;
+  --listening: #38E1FF;
+  --thinking: #8A5CFF;
+  --speaking: #D96BFF;
+  --muted: #8B8FA8;
+  --primary-text: #E8E9F2;
+  --surface: rgba(10, 10, 26, 0.6);
+  --border: rgba(255, 255, 255, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--primary-text);
+  font-family: 'Space Grotesk', sans-serif;
+  overflow-x: hidden;
+}
+
+body::-webkit-scrollbar { display: none; }
+
+@keyframes breathe {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50% { transform: scale(1.06); opacity: 1; }
+}
+
+@keyframes breathe-fast {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.1); opacity: 1; }
+}
+
+@keyframes breathe-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  25% { transform: scale(1.08); opacity: 1; }
+  75% { transform: scale(1.04); opacity: 0.95; }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes spin-reverse {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(-360deg); }
+}
+
+@keyframes grain {
+  0%, 100% { transform: translate(0, 0); }
+  10% { transform: translate(-2%, -2%); }
+  20% { transform: translate(2%, 1%); }
+  30% { transform: translate(-1%, 3%); }
+  40% { transform: translate(3%, -1%); }
+  50% { transform: translate(-2%, 2%); }
+  60% { transform: translate(1%, -3%); }
+  70% { transform: translate(-3%, 1%); }
+  80% { transform: translate(2%, 3%); }
+  90% { transform: translate(-1%, -2%); }
+}
+
+@keyframes wave-bar {
+  0%, 100% { transform: scaleY(0.15); }
+  50% { transform: scaleY(1); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes dot-blink {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+@keyframes ring-orbit {
+  from { transform: rotate(18deg); }
+  to { transform: rotate(378deg); }
+}
+
+@keyframes ring-orbit-rev {
+  from { transform: rotate(-14deg); }
+  to { transform: rotate(-374deg); }
+}
+
+@keyframes dust-twinkle {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.9; }
+}
+
+.orb-idle { animation: breathe 4s ease-in-out infinite; }
+.orb-listening { animation: breathe-fast 1.4s ease-in-out infinite; }
+.orb-thinking { animation: breathe 2.5s ease-in-out infinite; }
+.orb-speaking { animation: breathe-pulse 0.9s ease-in-out infinite; }
