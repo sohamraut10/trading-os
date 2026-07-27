@@ -47,6 +47,16 @@ from core.data.instruments import INDEX_UNDERLYINGS as _INDEX_SYMBOLS_ORCH
 
 log = logging.getLogger("trading_os.orchestrator")
 
+# ── Orchestrator constants ────────────────────────────────────────────────────
+_MIN_CANDLES_FOR_REGIME = 60       # minimum bars before upgrading to daily candles
+_SECONDARY_TF_CANDLE_LIMIT = 100   # bars fetched for secondary timeframe
+_HV_WINDOW_DAYS = 20               # rolling window for historical volatility
+_TRADING_DAYS_PER_YEAR = 252       # annualisation factor
+_OPTIONS_CTX_CACHE_SEC = 300       # cache TTL for option chain data (5 min)
+_HISTORY_MAX_CYCLES = 500          # cap on in-memory cycle history
+_IV_HV_RATIO_MIN = 0.5             # lower bound of normalised IV/HV range
+_IV_HV_RATIO_RANGE = 1.5           # width of normalised IV/HV range
+
 
 @dataclass
 class CycleResult:
@@ -205,15 +215,15 @@ class Orchestrator:
             #   count. Intraday hourly bars for NIFTY/BANKNIFTY span only 5 days
             #   and produce a noisy z-score; daily bars give a clean 100-day view
             #   that Quant can score at 90%+ confidence.
-            # - Other assets: fall back to daily only when intraday < 60 bars.
-            _MIN_CANDLES_NEEDED = 60
+            # - Other assets: fall back to daily only when intraday < _MIN_CANDLES_FOR_REGIME bars.
             _is_index = self.asset.upper() in _INDEX_SYMBOLS_ORCH
             _needs_daily = (_is_index and self.timeframe != "1d") or \
-                           (len(candles) < _MIN_CANDLES_NEEDED and self.timeframe != "1d")
+                           (len(candles) < _MIN_CANDLES_FOR_REGIME and self.timeframe != "1d")
             if _needs_daily:
                 try:
                     daily = await self._data.get_candles(self.asset, "1d", self._candle_limit)
-                    if len(daily) >= (_MIN_CANDLES_NEEDED if not _is_index else 30):
+                    _min_daily = _MIN_CANDLES_FOR_REGIME if not _is_index else 30
+                    if len(daily) >= _min_daily:
                         log.info(
                             "%s: using %d daily bars (%s)",
                             self.asset, len(daily),
@@ -221,7 +231,8 @@ class Orchestrator:
                         )
                         candles = daily
                 except Exception:
-                    pass
+                    log.warning("%s: daily candle fetch failed, continuing with %d %s bars",
+                                self.asset, len(candles), self.timeframe)
 
             # Emit BarClosed — the dashboard's event reducer seeds a new
             # cycle's `asset` field from whichever event arrives first for
@@ -253,7 +264,7 @@ class Orchestrator:
             # ── 2. Multi-timeframe regime ──────────────────────────────────────
             secondary_tf = "4h" if self.timeframe in ("1h", "15m") else "1d"
             try:
-                candles_4h = await self._data.get_candles(self.asset, secondary_tf, 100)
+                candles_4h = await self._data.get_candles(self.asset, secondary_tf, _SECONDARY_TF_CANDLE_LIMIT)
                 regimes = multi_timeframe_regimes(
                     {self.timeframe: candles, secondary_tf: candles_4h},
                     vix=macro.get("vix", 20),
@@ -305,11 +316,11 @@ class Orchestrator:
                 closes = np.array([c.close for c in candles], dtype=float)
                 closes = closes[closes > 0]
                 rets = np.diff(closes) / closes[:-1] if len(closes) > 1 else np.array([])
-                hv_20d = float(rets[-20:].std() * np.sqrt(252) * 100) if len(rets) >= 20 else 0.0
+                hv_20d = float(rets[-_HV_WINDOW_DAYS:].std() * np.sqrt(_TRADING_DAYS_PER_YEAR) * 100) if len(rets) >= _HV_WINDOW_DAYS else 0.0
                 if hv_20d > 0:
                     # IV/HV ratio: 1.0 = fair, >1.5 = expensive, <0.7 = cheap
                     iv_hv = opts_ctx["atm_iv"] / hv_20d
-                    vol_rank = round(min(100.0, max(0.0, (iv_hv - 0.5) / 1.5 * 100)), 1)
+                    vol_rank = round(min(100.0, max(0.0, (iv_hv - _IV_HV_RATIO_MIN) / _IV_HV_RATIO_RANGE * 100)), 1)
 
             ctx = MarketContext(
                 asset=self.asset,
@@ -575,7 +586,7 @@ class Orchestrator:
         if not broker or not hasattr(broker, "_dhan"):
             return {}
 
-        if time.time() - self._opts_ctx["ts"] < 300:  # 5-min cache
+        if time.time() - self._opts_ctx["ts"] < _OPTIONS_CTX_CACHE_SEC:
             return self._opts_ctx
 
         try:
@@ -688,14 +699,14 @@ class Orchestrator:
             return -1.0
         closes = np.array([c.close for c in candles], dtype=float)
         closes = closes[closes > 0]   # drop zero-price candles (corrupted data)
-        if len(closes) < 21:
+        if len(closes) < _HV_WINDOW_DAYS + 1:
             return -1.0
         rets = np.diff(closes) / closes[:-1]
-        if len(rets) < 20:
+        if len(rets) < _HV_WINDOW_DAYS:
             return -1.0
         hvs = [
-            float(rets[i:i + 20].std() * np.sqrt(252) * 100)
-            for i in range(len(rets) - 19)
+            float(rets[i:i + _HV_WINDOW_DAYS].std() * np.sqrt(_TRADING_DAYS_PER_YEAR) * 100)
+            for i in range(len(rets) - _HV_WINDOW_DAYS + 1)
         ]
         if not hvs:
             return -1.0
@@ -707,8 +718,8 @@ class Orchestrator:
 
     def _append_history(self, result: CycleResult) -> None:
         self._history.append(result)
-        if len(self._history) > 500:
-            self._history = self._history[-500:]
+        if len(self._history) > _HISTORY_MAX_CYCLES:
+            self._history = self._history[-_HISTORY_MAX_CYCLES:]
 
     @property
     def last_signal(self) -> TradeSignal | None:

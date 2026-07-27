@@ -564,8 +564,8 @@ async def health():
     try:
         account = await state.broker.get_account()
         equity = account.get("equity", equity)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("health: broker unavailable, using cached equity (%s)", exc)
     return {
         "status": "ok",
         "timestamp": time.time(),
@@ -970,8 +970,9 @@ async def ws_events(websocket: WebSocket):
         for ev in latest_cycle_events:
             try:
                 await websocket.send_json(ev)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("ws/events: pre-populate send failed, client likely closed (%s)", exc)
+                break
 
     try:
         while True:
