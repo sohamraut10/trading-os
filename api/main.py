@@ -4,11 +4,14 @@ Exposes REST endpoints for signal generation, backtesting, portfolio status, and
 WebSocket endpoint streams live signal decisions.
 """
 import asyncio
+import json as _json
 import logging
 import os
 import time
 import uuid
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from datetime import datetime, timezone
 from typing import Any
 
 logging.basicConfig(
@@ -198,6 +201,153 @@ class AppState:
 state = AppState()
 
 
+# ── Omega Task System ─────────────────────────────────────────────────────────
+# Provides /v1/tasks endpoints so the Fable console can dispatch goals and
+# stream live execution steps (thinking, tool calls, verdicts) to the UI.
+
+_task_store: dict[str, dict] = {}       # task_id → task record
+_current_task_id: ContextVar[str | None] = ContextVar("_current_task_id", default=None)
+_task_redis = None                       # redis.asyncio client, lazily initialised
+
+# Map Omega internal event types → UI-friendly (event_type, label) pairs
+_OMEGA_TO_UI: dict[str, tuple[str, str]] = {
+    "BarClosed":           ("AgentAction",   "fetch_candles"),
+    "RegimeUpdated":       ("AgentAction",   "detect_regime"),
+    "StrategySelected":    ("AgentAction",   "select_strategy"),
+    "HypothesisEmitted":   ("AgentThinking", ""),
+    "ScreeningResult":     ("AgentAction",   "agent_vote"),
+    "SanitizationApplied": ("AgentAction",   "sanitize"),
+    "VerdictReached":      ("NodeCompleted", "Consensus Vote"),
+    "OrderPlaced":         ("NodeCompleted", "Order Placed"),
+    "FinalCall":           ("NodeCompleted", "Analysis Complete"),
+}
+
+
+async def _init_task_redis():
+    global _task_redis
+    if _task_redis is not None:
+        return _task_redis
+    if not settings.redis_url:
+        return None
+    try:
+        import redis.asyncio as aioredis
+        _task_redis = await aioredis.from_url(settings.redis_url, decode_responses=True)
+        return _task_redis
+    except Exception as exc:
+        log.warning("tasks: Redis unavailable (%s) — stream events skipped", exc)
+        return None
+
+
+async def _task_event_bridge(event_dict: dict) -> None:
+    """Registered on event_bus '*'; routes Omega events into the task's Redis stream."""
+    task_id = _current_task_id.get()
+    if not task_id:
+        return
+    r = await _init_task_redis()
+    if not r:
+        return
+
+    omega_type = event_dict.get("type", "")
+    payload = event_dict.get("payload", {})
+    ui_type, label = _OMEGA_TO_UI.get(omega_type, ("AgentAction", omega_type))
+
+    if ui_type == "AgentThinking":
+        ui_data = {
+            "content": (
+                payload.get("summary")
+                or payload.get("hypothesis")
+                or payload.get("rationale")
+                or _json.dumps(payload, default=str)[:600]
+            )
+        }
+    elif ui_type == "NodeCompleted":
+        ui_data = {"node": label, "message": _json.dumps(payload, default=str)[:300]}
+    else:
+        agent = payload.get("agent_id") or payload.get("agent") or ""
+        ui_data = {
+            "tool": label,
+            "agent": agent,
+            "inputs": {k: v for k, v in payload.items()
+                       if k not in ("decision", "signal", "output", "result", "regime", "strategy")},
+            "output": (
+                payload.get("decision")
+                or payload.get("regime")
+                or payload.get("strategy")
+                or payload.get("signal")
+            ),
+        }
+
+    try:
+        await r.xadd(
+            f"omega:tasks:{task_id}:stream",
+            {"event_type": ui_type, "data": _json.dumps(ui_data, default=str)},
+        )
+    except Exception as exc:
+        log.debug("tasks: Redis XADD failed (%s)", exc)
+
+
+# Free-text goal → (asset, timeframe)
+_ASSET_HINTS: dict[str, str] = {
+    "nifty 50": "NIFTY", "nifty50": "NIFTY", "nifty": "NIFTY",
+    "bank nifty": "BANKNIFTY", "banknifty": "BANKNIFTY",
+    "fin nifty": "FINNIFTY", "finnifty": "FINNIFTY",
+    "midcap nifty": "MIDCPNIFTY", "midcap": "MIDCPNIFTY",
+    "btcusdt": "BTCUSDT", "bitcoin": "BTCUSDT", "btc": "BTCUSDT",
+    "ethusdt": "ETHUSDT", "ethereum": "ETHUSDT", "eth": "ETHUSDT",
+    "apple": "AAPL", "aapl": "AAPL",
+    "tesla": "TSLA", "tsla": "TSLA",
+    "reliance": "RELIANCE", "tcs": "TCS", "infosys": "INFY",
+    "gold": "GOLD", "silver": "SILVER",
+    "crude": "CRUDEOIL", "oil": "CRUDEOIL",
+}
+
+_TF_HINTS: dict[str, str] = {
+    "15 min": "15m", "15min": "15m", "15m": "15m",
+    "1 hour": "1h", "hourly": "1h", "1h": "1h",
+    "4 hour": "4h", "4h": "4h",
+    "1 day": "1d", "daily": "1d", "eod": "1d", "1d": "1d",
+}
+
+
+def _parse_goal(goal: str) -> tuple[str, str]:
+    lower = goal.lower()
+    asset = "BTCUSDT"
+    for hint, sym in sorted(_ASSET_HINTS.items(), key=lambda x: -len(x[0])):
+        if hint in lower:
+            asset = sym
+            break
+    tf = "1h"
+    for hint, val in sorted(_TF_HINTS.items(), key=lambda x: -len(x[0])):
+        if hint in lower:
+            tf = val
+            break
+    return asset, tf
+
+
+async def _execute_task(task_id: str, asset: str, timeframe: str) -> None:
+    """Background coroutine: run a consensus cycle and stream events to Redis."""
+    _task_store[task_id]["state"] = "RUNNING"
+    token = _current_task_id.set(task_id)
+    r = await _init_task_redis()
+    try:
+        result = await run_consensus_cycle(asset, timeframe, 300, False)
+        _task_store[task_id]["state"] = "COMPLETED"
+        _task_store[task_id]["result"] = result
+        if r:
+            await r.xadd(
+                f"omega:tasks:{task_id}:stream",
+                {"event_type": "NodeCompleted",
+                 "data": _json.dumps({"node": "Task Complete",
+                                      "message": result.get("final_decision", "")})},
+            )
+    except Exception:
+        log.exception("Task %s failed", task_id)
+        _task_store[task_id]["state"] = "FAILED"
+        _task_store[task_id]["result"] = {"error": "Execution failed — check server logs"}
+    finally:
+        _current_task_id.reset(token)
+
+
 def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
     """
     Gate for state-changing endpoints (trade submission, portfolio mutation,
@@ -369,6 +519,10 @@ async def live_suggestions_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Wire the task event bridge so every bus event is forwarded to the
+    # correct task's Redis stream when a /v1/tasks dispatch is in flight.
+    state.event_bus.on("*", _task_event_bridge)
+
     await state.news_feed.setup()
     await state.db.connect()
     try:
@@ -1179,6 +1333,40 @@ async def validate_prices(symbol: str = "RELIANCE") -> dict:
         sources["daily_close"] = {"status": "error", "error": str(e)}
 
     return {"symbol": symbol, "security_id": security_id, "exchange": exchange, "sources": sources}
+
+
+class TaskRequest(BaseModel):
+    goal: str
+
+
+@router.get("/v1/tasks")
+async def list_tasks() -> dict:
+    """Return all tasks newest-first (capped at 50). Used by Fable console."""
+    tasks = sorted(_task_store.values(), key=lambda t: t["created_at"], reverse=True)
+    return {"tasks": tasks[:50]}
+
+
+@router.post("/v1/tasks")
+async def create_task(req: TaskRequest, background_tasks: BackgroundTasks) -> dict:
+    """
+    Dispatch a free-text goal to the Omega consensus pipeline.
+    Asset and timeframe are extracted from the goal text; defaults are BTCUSDT/1h.
+    Events stream to Redis key omega:tasks:{task_id}:stream as they fire.
+    """
+    task_id = str(uuid.uuid4())
+    asset, timeframe = _parse_goal(req.goal)
+    _task_store[task_id] = {
+        "task_id":    task_id,
+        "goal":       req.goal,
+        "state":      "PENDING",
+        "result":     None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "asset":      asset,
+        "timeframe":  timeframe,
+    }
+    background_tasks.add_task(_execute_task, task_id, asset, timeframe)
+    log.info("Task %s dispatched: goal=%r  asset=%s  tf=%s", task_id[:8], req.goal, asset, timeframe)
+    return {"task_id": task_id, "asset": asset, "timeframe": timeframe}
 
 
 app.include_router(router)
