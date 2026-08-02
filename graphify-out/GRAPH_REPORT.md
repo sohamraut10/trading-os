@@ -1,12 +1,12 @@
-# Graph Report - .  (2026-07-27)
+# Graph Report - .  (2026-07-31)
 
 ## Corpus Check
-- 105 files · ~89,566 words
+- 105 files · ~90,245 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1370 nodes · 3774 edges · 82 communities detected
-- Extraction: 47% EXTRACTED · 53% INFERRED · 0% AMBIGUOUS · INFERRED: 1992 edges (avg confidence: 0.5)
+- 1381 nodes · 3913 edges · 85 communities detected
+- Extraction: 46% EXTRACTED · 54% INFERRED · 0% AMBIGUOUS · INFERRED: 2112 edges (avg confidence: 0.5)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
@@ -92,18 +92,21 @@
 - [[_COMMUNITY_Community 79|Community 79]]
 - [[_COMMUNITY_Community 80|Community 80]]
 - [[_COMMUNITY_Community 81|Community 81]]
+- [[_COMMUNITY_Community 82|Community 82]]
+- [[_COMMUNITY_Community 83|Community 83]]
+- [[_COMMUNITY_Community 84|Community 84]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `Signal` - 121 edges
 2. `TradeSignal` - 94 edges
 3. `OHLCV` - 77 edges
 4. `MarketContext` - 72 edges
-5. `Orchestrator` - 61 edges
-6. `PortfolioState` - 57 edges
-7. `Backtester` - 56 edges
-8. `DhanBroker` - 56 edges
-9. `AlertRouter` - 54 edges
-10. `AdaptiveWeightManager` - 52 edges
+5. `Orchestrator` - 66 edges
+6. `PortfolioState` - 62 edges
+7. `Backtester` - 61 edges
+8. `DhanBroker` - 61 edges
+9. `AlertRouter` - 59 edges
+10. `AdaptiveWeightManager` - 57 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `Tests for AlpacaBroker's guard against a missing alpaca-trade-api install.  alpa` --uses--> `AlpacaBroker`  [INFERRED]
@@ -121,11 +124,11 @@
 
 ### Community 0 - "Community 0"
 Cohesion: 0.02
-Nodes (119): ChainSummary, OIActivity, OptionChainAnalyzer, Option Chain Analyzer for NSE/BSE F&O. Consumes the Dhan option chain API respon, Expected 1 std-dev move from ATM straddle premium., Parses the Dhan option chain response and produces ChainSummary.      Dhan optio, Parse a raw Dhan option_chain() response and return ChainSummary.         Falls, Maximum pain = strike price where total option writers' pain is minimized (+111 more)
+Nodes (112): ChainSummary, OIActivity, OptionChainAnalyzer, Option Chain Analyzer for NSE/BSE F&O. Consumes the Dhan option chain API respon, Expected 1 std-dev move from ATM straddle premium., Parses the Dhan option chain response and produces ChainSummary.      Dhan optio, Parse a raw Dhan option_chain() response and return ChainSummary.         Falls, Maximum pain = strike price where total option writers' pain is minimized (+104 more)
 
 ### Community 1 - "Community 1"
-Cohesion: 0.07
-Nodes (78): AdaptiveWeightManager, Manages per-agent performance tracking and dynamic weight computation.     Weigh, AlertRouter, Backtester, BaseModel, AlpacaBroker, DhanBroker, Order (+70 more)
+Cohesion: 0.08
+Nodes (85): AdaptiveWeightManager, Manages per-agent performance tracking and dynamic weight computation.     Weigh, AlertRouter, Backtester, BaseModel, AlpacaBroker, DhanBroker, Order (+77 more)
 
 ### Community 2 - "Community 2"
 Cohesion: 0.04
@@ -133,23 +136,23 @@ Nodes (110): AnalyticsResult, PortfolioAnalytics, Runs a Monte Carlo simulation 
 
 ### Community 3 - "Community 3"
 Cohesion: 0.04
-Nodes (73): Alert, ConsoleAlerter, _is_market_live(), _ist_now(), Alert System — Telegram + Console Fires real-time alerts on: signal generated, t, Return True only if the exchange for this asset is currently open (IST)., Routes alerts to all registered channels., TelegramAlerter (+65 more)
+Nodes (70): ABC, Alert, ConsoleAlerter, _is_market_live(), _ist_now(), Alert System — Telegram + Console Fires real-time alerts on: signal generated, t, Return True only if the exchange for this asset is currently open (IST)., Routes alerts to all registered channels. (+62 more)
 
 ### Community 4 - "Community 4"
 Cohesion: 0.06
 Nodes (23): InvalidRunError, OptionsFrictions, Computes statutory and brokerage costs for a single options trade.         price, Applies slippage penalty to the execution price based on side., mock_run_agent_council(), Mocks the exact StateGraph execution that the live system runs.     In reality,, Replays historical bars and forces the live Agent Council to make decisions at e, replay_council() (+15 more)
 
 ### Community 5 - "Community 5"
-Cohesion: 0.07
-Nodes (26): analyze(), _build_broker(), cron_tick(), _get_or_create_orchestrator(), get_positions_enriched(), get_recent_events(), _is_asset_live(), _ist_now() (+18 more)
+Cohesion: 0.06
+Nodes (34): analyze(), _build_broker(), close_position(), create_task(), cron_tick(), _execute_task(), _get_or_create_orchestrator(), get_positions_enriched() (+26 more)
 
 ### Community 6 - "Community 6"
 Cohesion: 0.09
-Nodes (10): ABC, AlpacaStreamProvider, BaseLiveProvider, BinanceWSProvider, LiveFeedManager, MockLiveProvider, Connects to Alpaca realtime stream API (requires API keys)., Manages the active data feed provider, aggregates ticks into OHLCV bars,     and (+2 more)
+Nodes (10): InMemoryBus, KafkaConfig, make_bus(), Kafka Event Bus Decouples signal generation from downstream consumers (DB writer, Subscribes to one or more Kafka topics and dispatches events to handlers.     Ea, Drop-in replacement for Kafka in tests and dev mode.     Same pub/sub interface;, Factory: returns real Kafka producer if configured, else in-memory bus., Publishes TradeSignal events to Kafka.     Falls back to a no-op if Kafka is una (+2 more)
 
 ### Community 7 - "Community 7"
 Cohesion: 0.09
-Nodes (10): InMemoryBus, KafkaConfig, make_bus(), Kafka Event Bus Decouples signal generation from downstream consumers (DB writer, Subscribes to one or more Kafka topics and dispatches events to handlers.     Ea, Drop-in replacement for Kafka in tests and dev mode.     Same pub/sub interface;, Factory: returns real Kafka producer if configured, else in-memory bus., Publishes TradeSignal events to Kafka.     Falls back to a no-op if Kafka is una (+2 more)
+Nodes (9): AlpacaStreamProvider, BaseLiveProvider, BinanceWSProvider, LiveFeedManager, MockLiveProvider, Connects to Alpaca realtime stream API (requires API keys)., Manages the active data feed provider, aggregates ticks into OHLCV bars,     and, Generates synthetic price ticks using Geometric Brownian Motion (GBM).     Usefu (+1 more)
 
 ### Community 8 - "Community 8"
 Cohesion: 0.1
@@ -220,104 +223,104 @@ Cohesion: 0.28
 Nodes (11): _make_orchestrator(), test_cycle_increments_count(), test_cycle_populates_history(), test_cycle_recovers_from_data_error(), test_cycle_result_always_has_risk_result(), test_cycle_result_has_strategy(), test_cycle_sets_last_signal(), test_cycle_strategy_reason_populated() (+3 more)
 
 ### Community 25 - "Community 25"
-Cohesion: 0.2
-Nodes (3): ctx(), make_candles(), make_order_book()
+Cohesion: 0.18
+Nodes (7): Options Strategy Library and Selector. Defines all supported strategies as datac, Return ranked list of compatible strategies for the current regime.         Stra, Describes the option legs to trade., Full specification of a strategy., _score(), StrategyLegs, StrategySpec
 
 ### Community 26 - "Community 26"
 Cohesion: 0.2
-Nodes (3): Broker, BybitBroker, Bybit Broker Implementation (Crypto)     Expandable to support spot and perpetua
+Nodes (3): ctx(), make_candles(), make_order_book()
 
 ### Community 27 - "Community 27"
 Cohesion: 0.2
-Nodes (4): MarketScanner, Market-wide rotating scanner.  Builds a full tradeable universe from the scrip m, Rebuild universe from the loaded scrip master. Call after ensure_loaded()., Return the next `size` symbols in rotation, wrapping around.
+Nodes (3): Broker, BybitBroker, Bybit Broker Implementation (Crypto)     Expandable to support spot and perpetua
 
 ### Community 28 - "Community 28"
+Cohesion: 0.2
+Nodes (4): MarketScanner, Market-wide rotating scanner.  Builds a full tradeable universe from the scrip m, Rebuild universe from the loaded scrip master. Call after ensure_loaded()., Return the next `size` symbols in rotation, wrapping around.
+
+### Community 29 - "Community 29"
 Cohesion: 0.31
 Nodes (6): accuracy(), AgentPerformanceRecord, confidence_calibration(), Learning Loop — Adaptive Agent Weight System Adjusts agent weights over time bas, _was_correct(), weighted_accuracy()
 
-### Community 29 - "Community 29"
+### Community 30 - "Community 30"
 Cohesion: 0.22
 Nodes (4): Runs Monte Carlo simulation by shuffling trade sequences.         Returns the 5t, Buckets trades by market regime (e.g., 'trending', 'ranging', 'high_iv'), Runs sensitivity analysis by modifying a parameter and re-running the engine., RobustnessSuite
 
-### Community 30 - "Community 30"
+### Community 31 - "Community 31"
 Cohesion: 0.32
 Nodes (3): AgentWeightOptimizer, Adjusts weights based on which agents correctly predicted winning trades, Reinforcement Learning (RL) loop for tuning agent weights.     Uses a simple eps
 
-### Community 31 - "Community 31"
+### Community 32 - "Community 32"
+Cohesion: 0.36
+Nodes (0): 
+
+### Community 33 - "Community 33"
 Cohesion: 0.33
 Nodes (3): Called after a trade closes. Updates all agents that predicted this trade., Called when a position closes (from position monitor or broker callback)., New weight ∝ weighted_accuracy × calibration_score.         Normalized to sum to
 
-### Community 32 - "Community 32"
+### Community 34 - "Community 34"
 Cohesion: 0.38
 Nodes (6): fetch_historical_candles_mock(), Mock function representing the fetching of market data to verify the outcome., Deterministically scores a suggestion against actual subsequent price action., Nightly job: Scans the DB for /charts suggestions whose horizon has passed and s, run_nightly_scorer(), score_suggestion()
 
-### Community 33 - "Community 33"
+### Community 35 - "Community 35"
 Cohesion: 0.29
 Nodes (5): BaseSettings, AgentWeights, ConsensusConfig, RiskConfig, Settings
 
-### Community 34 - "Community 34"
+### Community 36 - "Community 36"
 Cohesion: 0.33
 Nodes (3): Postgres persistence — durable storage for signals, agent decisions, portfolio s, SQLAlchemy-style URLs (postgresql+asyncpg://...) aren't valid asyncpg DSNs., _to_asyncpg_dsn()
 
-### Community 35 - "Community 35"
+### Community 37 - "Community 37"
+Cohesion: 0.33
+Nodes (2): AI Trade Journal Generates human-readable post-trade analysis using an LLM (Clau, TradeJournalEntry
+
+### Community 38 - "Community 38"
 Cohesion: 0.33
 Nodes (3): BanyanCondorSpec, Reference Options Specification: Banyan Condor.     A short iron condor relying, Evaluates if the position requires adjustment based on current greeks/price.
 
-### Community 36 - "Community 36"
+### Community 39 - "Community 39"
 Cohesion: 0.6
 Nodes (5): create_mock_context(), test_emit_hypothesis(), test_strategy_selector_pinned(), test_strategy_selector_trending(), test_strategy_selector_volatile()
 
-### Community 37 - "Community 37"
+### Community 40 - "Community 40"
 Cohesion: 0.33
 Nodes (1): Tests for api/index.py, the Vercel serverless entrypoint.  This guards specifica
 
-### Community 38 - "Community 38"
+### Community 41 - "Community 41"
 Cohesion: 0.47
 Nodes (3): create_decisions(), test_debate_skipped(), test_debate_triggered_by_split()
 
-### Community 39 - "Community 39"
+### Community 42 - "Community 42"
 Cohesion: 0.4
 Nodes (4): adjust_confidence(), apply_da_challenge(), Applies rebuttal adjustment rules to compute confidence delta.     Max confidenc, Applies Devil's Advocate cross-examination adjustments.     For each active risk
 
-### Community 40 - "Community 40"
+### Community 43 - "Community 43"
 Cohesion: 0.4
 Nodes (4): download_bhavcopy(), process_and_load(), Downloads NSE F&O bhavcopy for a given date.     URL format: https://archives.ns, Parses the raw CSV and upserts into Postgres.
 
-### Community 41 - "Community 41"
+### Community 44 - "Community 44"
 Cohesion: 0.5
 Nodes (4): fetch_live_chain(), Simulates fetching the live options chain from Dhan HQ API.     In production, t, Main loop to snapshot the live chain every X seconds., run_recorder()
 
-### Community 42 - "Community 42"
+### Community 45 - "Community 45"
 Cohesion: 0.5
 Nodes (4): approximate_iv(), black_76_greeks(), Newton-Raphson to solve for Implied Volatility given the market price., Computes Option Price, IV, and Greeks using the Black-76 model for futures.
 
-### Community 43 - "Community 43"
+### Community 46 - "Community 46"
 Cohesion: 0.4
 Nodes (0): 
 
-### Community 44 - "Community 44"
-Cohesion: 0.67
-Nodes (0): 
-
-### Community 45 - "Community 45"
-Cohesion: 0.67
-Nodes (0): 
-
-### Community 46 - "Community 46"
-Cohesion: 0.67
-Nodes (1): Tests for AlpacaBroker's guard against a missing alpaca-trade-api install.  alpa
-
 ### Community 47 - "Community 47"
-Cohesion: 1.0
+Cohesion: 0.67
 Nodes (0): 
 
 ### Community 48 - "Community 48"
-Cohesion: 1.0
+Cohesion: 0.67
 Nodes (0): 
 
 ### Community 49 - "Community 49"
-Cohesion: 1.0
-Nodes (0): 
+Cohesion: 0.67
+Nodes (1): Tests for AlpacaBroker's guard against a missing alpaca-trade-api install.  alpa
 
 ### Community 50 - "Community 50"
 Cohesion: 1.0
@@ -329,51 +332,51 @@ Nodes (0):
 
 ### Community 52 - "Community 52"
 Cohesion: 1.0
-Nodes (1): Vercel serverless entrypoint.  Vercel invokes whatever ASGI `app` this file expo
+Nodes (0): 
 
 ### Community 53 - "Community 53"
 Cohesion: 1.0
-Nodes (1): Annualized historical volatility from log-returns over `period` days.         Re
+Nodes (0): 
 
 ### Community 54 - "Community 54"
 Cohesion: 1.0
-Nodes (1): Expected 1σ and 2σ moves from spot over `days_to_expiry` calendar days.
+Nodes (0): 
 
 ### Community 55 - "Community 55"
 Cohesion: 1.0
-Nodes (1): Quick expected move from ATM straddle premium (market-implied).         1σ ≈ 0.6
+Nodes (1): Vercel serverless entrypoint.  Vercel invokes whatever ASGI `app` this file expo
 
 ### Community 56 - "Community 56"
 Cohesion: 1.0
-Nodes (1): Return True when it's statistically favorable to sell premium (write options).
+Nodes (1): Annualized historical volatility from log-returns over `period` days.         Re
 
 ### Community 57 - "Community 57"
 Cohesion: 1.0
-Nodes (1): Return True when it's favorable to buy premium (long options).         Condition
+Nodes (1): Expected 1σ and 2σ moves from spot over `days_to_expiry` calendar days.
 
 ### Community 58 - "Community 58"
 Cohesion: 1.0
-Nodes (1): Pick the safer expiry for new entries.
+Nodes (1): Quick expected move from ATM straddle premium (market-implied).         1σ ≈ 0.6
 
 ### Community 59 - "Community 59"
 Cohesion: 1.0
-Nodes (1): Next occurrence of `weekday` (0=Mon) on or after `from_date`.
+Nodes (1): Return True when it's statistically favorable to sell premium (write options).
 
 ### Community 60 - "Community 60"
 Cohesion: 1.0
-Nodes (1): Last Thursday (or expiry_weekday) of current or next month.         NSE monthly
+Nodes (1): Return True when it's favorable to buy premium (long options).         Condition
 
 ### Community 61 - "Community 61"
 Cohesion: 1.0
-Nodes (0): 
+Nodes (1): Pick the safer expiry for new entries.
 
 ### Community 62 - "Community 62"
 Cohesion: 1.0
-Nodes (1): EMA of accuracy — recent predictions weigh more.
+Nodes (1): Next occurrence of `weekday` (0=Mon) on or after `from_date`.
 
 ### Community 63 - "Community 63"
 Cohesion: 1.0
-Nodes (1): How well-calibrated is the agent's confidence vs actual accuracy?
+Nodes (1): Last Thursday (or expiry_weekday) of current or next month.         NSE monthly
 
 ### Community 64 - "Community 64"
 Cohesion: 1.0
@@ -381,11 +384,11 @@ Nodes (0):
 
 ### Community 65 - "Community 65"
 Cohesion: 1.0
-Nodes (0): 
+Nodes (1): EMA of accuracy — recent predictions weigh more.
 
 ### Community 66 - "Community 66"
 Cohesion: 1.0
-Nodes (0): 
+Nodes (1): How well-calibrated is the agent's confidence vs actual accuracy?
 
 ### Community 67 - "Community 67"
 Cohesion: 1.0
@@ -447,48 +450,54 @@ Nodes (0):
 Cohesion: 1.0
 Nodes (0): 
 
+### Community 82 - "Community 82"
+Cohesion: 1.0
+Nodes (0): 
+
+### Community 83 - "Community 83"
+Cohesion: 1.0
+Nodes (0): 
+
+### Community 84 - "Community 84"
+Cohesion: 1.0
+Nodes (0): 
+
 ## Knowledge Gaps
 - **128 isolated node(s):** `Volatility Engine for Indian Options. Computes:   - India VIX integration (from`, `Point-in-time volatility summary.`, `Rolling IV history and volatility metrics engine.      Maintains a rolling deque`, `Add a new IV observation to the rolling history.`, `IV Rank (0–100): position of current IV in its 52-week range.         0 = at 52-` (+123 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **Thin community `Community 47`** (2 nodes): `Orb()`, `App.tsx`
+- **Thin community `Community 50`** (2 nodes): `Orb()`, `App.tsx`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 48`** (2 nodes): `test_event_bus_round_trip()`, `test_event_bus.py`
+- **Thin community `Community 51`** (2 nodes): `test_event_bus_round_trip()`, `test_event_bus.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 49`** (2 nodes): `eventsPoller.js`, `connectEvents()`
+- **Thin community `Community 52`** (2 nodes): `eventsPoller.js`, `connectEvents()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 50`** (2 nodes): `eventReducer.js`, `eventReducer()`
+- **Thin community `Community 53`** (2 nodes): `eventReducer.js`, `eventReducer()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 51`** (2 nodes): `test_dhan_order.py`, `main()`
+- **Thin community `Community 54`** (2 nodes): `test_dhan_order.py`, `main()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 52`** (2 nodes): `index.py`, `Vercel serverless entrypoint.  Vercel invokes whatever ASGI `app` this file expo`
+- **Thin community `Community 55`** (2 nodes): `index.py`, `Vercel serverless entrypoint.  Vercel invokes whatever ASGI `app` this file expo`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 53`** (1 nodes): `Annualized historical volatility from log-returns over `period` days.         Re`
+- **Thin community `Community 56`** (1 nodes): `Annualized historical volatility from log-returns over `period` days.         Re`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 54`** (1 nodes): `Expected 1σ and 2σ moves from spot over `days_to_expiry` calendar days.`
+- **Thin community `Community 57`** (1 nodes): `Expected 1σ and 2σ moves from spot over `days_to_expiry` calendar days.`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 55`** (1 nodes): `Quick expected move from ATM straddle premium (market-implied).         1σ ≈ 0.6`
+- **Thin community `Community 58`** (1 nodes): `Quick expected move from ATM straddle premium (market-implied).         1σ ≈ 0.6`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 56`** (1 nodes): `Return True when it's statistically favorable to sell premium (write options).`
+- **Thin community `Community 59`** (1 nodes): `Return True when it's statistically favorable to sell premium (write options).`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 57`** (1 nodes): `Return True when it's favorable to buy premium (long options).         Condition`
+- **Thin community `Community 60`** (1 nodes): `Return True when it's favorable to buy premium (long options).         Condition`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 58`** (1 nodes): `Pick the safer expiry for new entries.`
+- **Thin community `Community 61`** (1 nodes): `Pick the safer expiry for new entries.`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 59`** (1 nodes): `Next occurrence of `weekday` (0=Mon) on or after `from_date`.`
+- **Thin community `Community 62`** (1 nodes): `Next occurrence of `weekday` (0=Mon) on or after `from_date`.`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 60`** (1 nodes): `Last Thursday (or expiry_weekday) of current or next month.         NSE monthly`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 61`** (1 nodes): `__init__.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 62`** (1 nodes): `EMA of accuracy — recent predictions weigh more.`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 63`** (1 nodes): `How well-calibrated is the agent's confidence vs actual accuracy?`
+- **Thin community `Community 63`** (1 nodes): `Last Thursday (or expiry_weekday) of current or next month.         NSE monthly`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 64`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 65`** (1 nodes): `__init__.py`
+- **Thin community `Community 65`** (1 nodes): `EMA of accuracy — recent predictions weigh more.`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 66`** (1 nodes): `__init__.py`
+- **Thin community `Community 66`** (1 nodes): `How well-calibrated is the agent's confidence vs actual accuracy?`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 67`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
@@ -504,32 +513,38 @@ Nodes (0):
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 73`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 74`** (1 nodes): `main.tsx`
+- **Thin community `Community 74`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 75`** (1 nodes): `vite-env.d.ts`
+- **Thin community `Community 75`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 76`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 77`** (1 nodes): `tailwind.config.js`
+- **Thin community `Community 77`** (1 nodes): `main.tsx`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 78`** (1 nodes): `vite.config.js`
+- **Thin community `Community 78`** (1 nodes): `vite-env.d.ts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 79`** (1 nodes): `postcss.config.js`
+- **Thin community `Community 79`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 80`** (1 nodes): `main.jsx`
+- **Thin community `Community 80`** (1 nodes): `tailwind.config.js`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 81`** (1 nodes): `__init__.py`
+- **Thin community `Community 81`** (1 nodes): `vite.config.js`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 82`** (1 nodes): `postcss.config.js`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 83`** (1 nodes): `main.jsx`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 84`** (1 nodes): `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `Signal` connect `Community 3` to `Community 0`, `Community 1`, `Community 2`?**
-  _High betweenness centrality (0.147) - this node is a cross-community bridge._
-- **Why does `OHLCV` connect `Community 2` to `Community 0`, `Community 1`, `Community 6`, `Community 23`?**
+  _High betweenness centrality (0.145) - this node is a cross-community bridge._
+- **Why does `OHLCV` connect `Community 2` to `Community 0`, `Community 1`, `Community 7`, `Community 23`?**
   _High betweenness centrality (0.113) - this node is a cross-community bridge._
 - **Why does `OptionsAnalysisAgent` connect `Community 0` to `Community 1`, `Community 2`, `Community 3`?**
-  _High betweenness centrality (0.102) - this node is a cross-community bridge._
+  _High betweenness centrality (0.103) - this node is a cross-community bridge._
 - **Are the 118 inferred relationships involving `Signal` (e.g. with `CycleResult` and `Orchestrator`) actually correct?**
   _`Signal` has 118 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 89 inferred relationships involving `TradeSignal` (e.g. with `CycleResult` and `Orchestrator`) actually correct?**

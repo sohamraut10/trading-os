@@ -310,7 +310,7 @@ services:
       TTS_VOICE: Samantha
       TTS_RATE: "200"
       FABLE_ACCESS_TOKEN: ${FABLE_ACCESS_TOKEN}
-      OMEGA_API_URL: http://host.docker.internal:8003
+      OMEGA_API_URL: http://api:8000
       OMEGA_API_TOKEN: ${OMEGA_API_TOKEN}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -318,6 +318,8 @@ services:
       # Mount host Claude Code auth so the CLI works inside the container
       - ${HOME}/.claude:/home/node/.claude
       - ${HOME}/.claude.json:/home/node/.claude.json
+      # Mount ECC for Fable Agents and Skills API
+      - ${HOME}/ECC:/home/node/ECC:ro
     depends_on:
       api:
         condition: service_healthy
