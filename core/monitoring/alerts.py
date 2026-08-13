@@ -137,5 +137,11 @@ class AlertRouter:
             body="Daily drawdown limit approaching." if daily_pnl_pct < -2 else "P&L update.",
         ))
 
+    async def _console_only(self, alert: Alert) -> None:
+        await asyncio.gather(
+            *[a.send(alert) for a in self._alerters if isinstance(a, ConsoleAlerter)],
+            return_exceptions=True,
+        )
+
     async def _broadcast(self, alert: Alert) -> None:
         await asyncio.gather(*[a.send(alert) for a in self._alerters], return_exceptions=True)

@@ -145,7 +145,7 @@ class PositionMonitor:
                         self._weights.resolve_trade_by_asset(symbol, pnl_pct)
                     self._entry_prices.pop(symbol, None)
                     if self._alerts:
-                        await self._alerts._broadcast(Alert(
+                        await self._alerts._console_only(Alert(
                             level="critical",
                             title=f"EMERGENCY CLOSE — {symbol}",
                             body=f"Loss {pnl_pct*100:.1f}% exceeded {emergency_pct*100:.1f}% threshold. Closed at market.",
@@ -199,7 +199,7 @@ class PositionMonitor:
                         self._weights.resolve_trade_by_asset(symbol, pnl_pct)
                     self._entry_prices.pop(symbol, None)
                     if self._alerts:
-                        await self._alerts._broadcast(Alert(
+                        await self._alerts._console_only(Alert(
                             level="critical",
                             title=f"PAST SL CLOSE — {symbol}",
                             body=f"Price {current_price:.2f} already past SL {sl_price:.2f}. Closed at market.",
@@ -259,7 +259,7 @@ class PositionMonitor:
                     else:
                         log.error("SL placement failed for %s: %s", symbol, err)
                         if self._alerts:
-                            await self._alerts._broadcast(Alert(
+                            await self._alerts._console_only(Alert(
                                 level="critical",
                                 title=f"SL FAILED — {symbol}",
                                 body=(
@@ -274,7 +274,7 @@ class PositionMonitor:
                     self._sl_placed_ts[symbol] = time.time()
                     log.info("SL placed for %s @ %.2f", symbol, sl_price)
                     if self._alerts:
-                        await self._alerts._broadcast(Alert(
+                        await self._alerts._console_only(Alert(
                             level="warning",
                             title=f"Auto-SL placed — {symbol}",
                             body=f"Stop-loss at {sl_price:.2f} ({'long' if is_long else 'short'} {abs(qty):.0f} qty)",
