@@ -289,7 +289,7 @@ services:
   # ── Fable — voice-first finance assistant (Next.js) ─────────────────────��───
   fable:
     build:
-      context: ../fable
+      context: ../frontend
       dockerfile: Dockerfile
     platform: linux/arm64
     <<: *restart
@@ -306,14 +306,35 @@ services:
       FABLE_CLAUDE_MODEL: claude-sonnet-4-6
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
-      FABLE_BACKENDS: api-gemini,cli-claude
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY}
+      FABLE_BACKENDS: api-local-claude
+      CLAUDE_PROXY_URL: http://host.docker.internal:9999
       TTS_VOICE: Samantha
       TTS_RATE: "200"
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ELEVENLABS_VOICE_ID: ${ELEVENLABS_VOICE_ID:-}
       FABLE_ACCESS_TOKEN: ${FABLE_ACCESS_TOKEN}
-      OMEGA_API_URL: http://api:8000
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET}
+      OMEGA_API_URL: http://host.docker.internal:8003
       OMEGA_API_TOKEN: ${OMEGA_API_TOKEN}
+      MERCURY_URL: http://host.docker.internal:8010
+      MERCURY_API_KEY: mercury-dev-key
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON:-}
+      GOOGLE_DRIVE_FOLDER_ID: ${GOOGLE_DRIVE_FOLDER_ID:-}
+      CRON_SECRET: ${CRON_SECRET:-}
+      FABLE_API_KEY: ${FABLE_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Restore .claude.json from backup (OrbStack file bind-mounts are unreliable)
+    command: >
+      sh -c '
+        if [ ! -s /home/node/.claude.json ]; then
+          BACKUP=$$(ls /home/node/.claude/backups/.claude.json.backup.* 2>/dev/null | sort | tail -1);
+          [ -n "$$BACKUP" ] && cp "$$BACKUP" /home/node/.claude.json;
+        fi;
+        exec node server.js
+      '
     volumes:
       # Mount host Claude Code auth so the CLI works inside the container
       - ${HOME}/.claude:/home/node/.claude
