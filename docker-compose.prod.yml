@@ -307,8 +307,9 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       NVIDIA_API_KEY: ${NVIDIA_API_KEY}
-      FABLE_BACKENDS: api-local-claude
-      CLAUDE_PROXY_URL: http://host.docker.internal:9999
+      FABLE_BACKENDS: ${FABLE_BACKENDS:-api-ollama,api-gemini,api-nvidia}
+      OLLAMA_HOST: http://host.docker.internal:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
       TTS_VOICE: Samantha
       TTS_RATE: "200"
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
