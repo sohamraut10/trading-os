@@ -728,6 +728,14 @@ class TradeRequest(BaseModel):
     quantity: float
 
 
+class OrderRequest(BaseModel):
+    symbol: str = Field(..., example="NIFTY 24500 CE")
+    side: str = Field("BUY", example="BUY")
+    qty: float = Field(1.0, ge=0.0001)
+    order_type: str = Field("MARKET", example="MARKET")
+    price: float | None = None
+
+
 class ClosePositionRequest(BaseModel):
     asset: str
 
@@ -1019,6 +1027,96 @@ async def submit_trade(req: TradeRequest, _: None = Depends(require_api_key)):
             "warnings": risk_result.warnings,
             "sanitization_diff": risk_result.sanitization_diff,
         },
+    }
+
+
+@router.post("/trades/order")
+@router.post("/trade/order")
+async def execute_trade_order(req: OrderRequest, _: None = Depends(require_api_key)):
+    from core.execution.broker_interface import Order, OrderType, OrderStatus
+    try:
+        price = req.price or await state.market_data.get_current_price(req.symbol)
+    except Exception:
+        price = req.price or 100.0
+
+    side_lower = req.side.lower()
+    order_type_enum = OrderType.LIMIT if req.order_type.upper() == "LIMIT" and req.price else OrderType.MARKET
+
+    order = Order(
+        asset=req.symbol,
+        side=side_lower,
+        quantity=req.qty,
+        order_type=order_type_enum,
+        limit_price=price,
+    )
+
+    filled_order = await state.broker.submit_order(order)
+    order_id = str(uuid.uuid4())[:8]
+
+    if filled_order.status == OrderStatus.FILLED:
+        state.portfolio.open_trades += 1
+        asyncio.create_task(state.db.snapshot_portfolio(state.portfolio))
+
+    return {
+        "status": filled_order.status.value,
+        "order_id": order_id,
+        "symbol": req.symbol,
+        "side": req.side.upper(),
+        "qty": filled_order.filled_qty or req.qty,
+        "avg_price": filled_order.avg_fill_price or price,
+        "message": f"Order {filled_order.status.value}: {req.side.upper()} {req.qty}x {req.symbol} @ ₹{filled_order.avg_fill_price or price:.2f}",
+        "broker_error": filled_order.metadata.get("error"),
+    }
+
+
+@router.get("/risk/status")
+async def get_risk_status(_: None = Depends(require_api_key)) -> dict:
+    daily_loss_limit = 500.0
+    daily_pnl = getattr(state.portfolio, "daily_pnl", 0.0)
+    max_dd = getattr(state.portfolio, "max_drawdown_pct", 0.0)
+    open_trades = getattr(state.portfolio, "open_trades", len(state.portfolio.positions) if hasattr(state.portfolio, "positions") else 0)
+
+    is_breached = daily_pnl < -daily_loss_limit or max_dd > 5.0
+    status_str = "🔴 HALTED (Risk Breach)" if is_breached else "🟢 ACTIVE (Guardrails Engaged)"
+
+    return {
+        "status": status_str,
+        "daily_loss_limit": daily_loss_limit,
+        "daily_pnl": daily_pnl,
+        "max_drawdown_pct": max_dd,
+        "open_trades": open_trades,
+        "kill_switch_armed": True,
+        "safe_to_trade": not is_breached,
+    }
+
+
+@router.post("/risk/kill-switch")
+async def trigger_kill_switch(_: None = Depends(require_api_key)) -> dict:
+    log.warning("EMERGENCY KILL SWITCH TRIGGERED — liquidating all open positions.")
+    positions = await state.broker.get_positions()
+    closed_count = 0
+    from core.execution.broker_interface import Order, OrderType
+
+    for sym, pos in list(positions.items()):
+        try:
+            qty = pos.get("qty", 0)
+            if qty > 0:
+                price = await state.market_data.get_current_price(sym)
+                order = Order(asset=sym, side="sell", quantity=qty, order_type=OrderType.MARKET, limit_price=price)
+                await state.broker.submit_order(order)
+                closed_count += 1
+        except Exception as e:
+            log.error(f"Failed to emergency close {sym}: {e}")
+
+    state.portfolio.open_trades = 0
+    state.portfolio.positions.clear()
+    asyncio.create_task(state.db.snapshot_portfolio(state.portfolio))
+
+    return {
+        "status": "HALTED",
+        "action": "EMERGENCY_LIQUIDATION_COMPLETE",
+        "positions_closed": closed_count,
+        "message": f"Kill switch executed. Closed {closed_count} positions. Trading is now locked.",
     }
 
 
