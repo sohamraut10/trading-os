@@ -305,11 +305,8 @@ services:
       CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-6}
       FABLE_CLAUDE_MODEL: claude-sonnet-4-6
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
-      NVIDIA_API_KEY: ${NVIDIA_API_KEY}
-      NVIDIA_MODEL: ${NVIDIA_MODEL:-meta/llama-3.1-70b-instruct}
-      FABLE_BACKENDS: ${FABLE_BACKENDS:-api-nvidia,api-gemini,api-ollama}
-      OLLAMA_HOST: http://host.docker.internal:11434
+      FABLE_BACKENDS: ${FABLE_BACKENDS:-api-ollama}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
       TTS_VOICE: Samantha
       TTS_RATE: "200"
