@@ -1,24 +1,24 @@
-# Two-stage build: Vite → nginx
-# Used by docker-compose.prod.yml; the API container also embeds the build
-# for single-container deployments (Render/Fly). Here we serve it standalone
-# behind Caddy so the API and frontend can scale and deploy independently.
-
+# Two-stage build: Vite → nginx with pnpm centralized store
 # ── Stage 1: build ────────────────────────────────────────────────────────────
 FROM node:20-alpine AS build
+RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
-# Install dependencies first (better layer caching)
-COPY dashboard/package*.json ./
-RUN npm ci --prefer-offline
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Install dependencies first with pnpm cache mount
+COPY dashboard/package.json dashboard/pnpm-lock.yaml* ./
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile || pnpm install
 
 # Copy source and build
 COPY dashboard/ ./
-# VITE_ env vars baked in at build time; pass with --build-arg if needed
 ARG VITE_API_URL=https://api.example.com
 ARG VITE_WS_URL=wss://api.example.com
 ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_WS_URL=$VITE_WS_URL
-RUN npm run build
+RUN pnpm run build
 
 # ── Stage 2: serve ────────────────────────────────────────────────────────────
 FROM nginx:1.27-alpine AS production
@@ -29,7 +29,6 @@ RUN rm -rf ./*
 
 # Copy built assets
 COPY --from=build /app/dist ./
-
 COPY infrastructure/nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
