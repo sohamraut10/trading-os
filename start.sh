@@ -25,4 +25,4 @@ async def init_schema():
 asyncio.run(init_schema())
 PYEOF
 
-exec uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 1
+exec uvicorn api.main:app --host 0.0.0.0 --port 8003 --workers 1

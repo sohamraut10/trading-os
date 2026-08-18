@@ -66,7 +66,7 @@
             path   /ws/*
         }
         handle @websocket {
-            reverse_proxy api:8000 {
+            reverse_proxy api:8003 {
                 transport http {
                     dial_timeout            5s
                     response_header_timeout 0s
@@ -82,7 +82,7 @@
         }
 
         handle {
-            reverse_proxy api:8000 {
+            reverse_proxy api:8003 {
                 transport http {
                     dial_timeout            5s
                     response_header_timeout 60s

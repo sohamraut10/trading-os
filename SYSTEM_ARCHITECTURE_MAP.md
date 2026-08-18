@@ -11,8 +11,8 @@ This document provides a comprehensive map of the entire architecture built so f
 | Host-local Omega (`make backend` from monorepo root) | **`:8003`** | `uvicorn api.main:app --host 0.0.0.0 --port 8003` |
 | Fable frontend (`make frontend`) | `:3000` | Next.js 15 |
 | Frontend → Omega env | `OMEGA_API_URL=http://localhost:8003` | `TRADING_OS_URL` is a deprecated alias |
-| Docker Compose API (in-network) | `api:8000` / host `localhost:8000` | Container-internal; do **not** use as the monorepo host default |
-| Docker → host Omega | `http://host.docker.internal:8003` | When Fable runs in compose and Omega on the Mac |
+| Docker Compose API | `api:8003` / host `localhost:8003` | Container listen, host map, and in-network all **8003** |
+| Compose Fable → Omega | `OMEGA_API_URL` / `TRADING_OS_URL` = `http://api:8003` | Same Docker network; no `host.docker.internal` for Omega |
 
 Auth: protected routes require `API_AUTH_TOKEN` (`X-API-Key` or `Authorization: Bearer`). Empty token → fail-closed `503`. `/v1/tasks*` is gated.
 

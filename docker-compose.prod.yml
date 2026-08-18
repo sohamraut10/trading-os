@@ -110,7 +110,7 @@ services:
     platform: linux/arm64
     <<: *restart
     ports:
-      - "8000:8000"
+      - "8003:8003"
     networks:
       - frontend
       - backend
@@ -154,7 +154,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -301,7 +301,7 @@ services:
     environment:
       NODE_ENV: production
       # Reaches trading OS on the internal Docker network
-      TRADING_OS_URL: http://api:8000
+      TRADING_OS_URL: http://api:8003
       CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-6}
       FABLE_CLAUDE_MODEL: claude-sonnet-4-6
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -315,7 +315,7 @@ services:
       FABLE_ACCESS_TOKEN: ${FABLE_ACCESS_TOKEN}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET}
-      OMEGA_API_URL: http://host.docker.internal:8003
+      OMEGA_API_URL: http://api:8003
       OMEGA_API_TOKEN: ${OMEGA_API_TOKEN}
       MERCURY_URL: http://host.docker.internal:8010
       MERCURY_API_KEY: ${MERCURY_API_KEY}

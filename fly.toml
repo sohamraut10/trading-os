@@ -22,7 +22,7 @@ primary_region = "iad"
   MOCK_MODE = "true"
 
 [http_service]
-  internal_port = 8000
+  internal_port = 8003
   force_https = true
   auto_stop_machines = false
   auto_start_machines = true

@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     # tasks, analyze-with-execute). Empty disables those routes entirely (fails
     # closed, same as cron_secret). Frontend OMEGA_API_TOKEN must match this value.
     api_auth_token: str = ""
-    cors_allowed_origins: str = "http://localhost:5173,http://localhost:8000,http://localhost:3000"
+    cors_allowed_origins: str = "http://localhost:5173,http://localhost:8003,http://localhost:3000"
 
     # API Keys
     anthropic_api_key: str = ""

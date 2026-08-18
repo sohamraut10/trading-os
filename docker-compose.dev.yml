@@ -27,7 +27,7 @@ services:
     platform: linux/arm64
     <<: *restart
     ports:
-      - "8000:8000"
+      - "8003:8003"
     volumes:
       # Mount entire project for hot reload (excludes node_modules via .dockerignore)
       - .:/app
@@ -55,14 +55,14 @@ services:
       MOCK_MODE: ${MOCK_MODE:-true}
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
-    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8003 --reload --reload-dir /app
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -82,8 +82,8 @@ services:
       - ./dashboard:/app
       - /app/node_modules          # anonymous volume to prevent host override
     environment:
-      VITE_API_URL: http://localhost:8000
-      VITE_WS_URL: ws://localhost:8000
+      VITE_API_URL: http://localhost:8003
+      VITE_WS_URL: ws://localhost:8003
     command: sh -c "npm ci && npm run dev -- --host 0.0.0.0"
     networks:
       - dev

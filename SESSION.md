@@ -169,9 +169,9 @@ uvicorn api.main:app --reload --host 0.0.0.0 --port 8003
 cd infrastructure
 docker compose up -d
 ```
-- API (compose host map): http://localhost:8000 — in-network `api:8000`
-- Host-local Omega (Makefile / Fable): http://localhost:8003
-- Grafana: http://localhost:3000 (admin/admin) — conflicts with Fable frontend if both bind :3000
+- API (compose host map + in-network): http://localhost:8003 — `api:8003`
+- Host-local Omega (Makefile / Fable): http://localhost:8003 (same canonical port)
+- Grafana: http://localhost:3001 (admin/admin) — host-mapped to avoid Fable `:3000`
 - Prometheus: http://localhost:9090
 
 ### Key endpoints

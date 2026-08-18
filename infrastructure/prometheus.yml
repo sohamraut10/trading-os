@@ -14,7 +14,7 @@ scrape_configs:
   # Exposes custom trading metrics: signals, latency, portfolio equity, etc.
   - job_name: trading-os-api
     static_configs:
-      - targets: ['api:8000']
+      - targets: ['api:8003']
     metrics_path: /metrics
     scrape_interval: 10s
     scrape_timeout: 5s
