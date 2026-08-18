@@ -155,3 +155,91 @@ def test_build_broker_falls_back_to_paper_broker_when_alpaca_construction_fails(
     finally:
         settings.alpaca_api_key = original_key
         settings.dhan_client_id = original_dhan
+
+
+def test_list_tasks_requires_api_key():
+    with TestClient(app) as client:
+        res = client.get("/v1/tasks")
+        assert res.status_code == 401
+
+
+def test_list_tasks_rejects_wrong_api_key():
+    with TestClient(app) as client:
+        res = client.get("/v1/tasks", headers={"X-API-Key": "wrong"})
+        assert res.status_code == 401
+
+
+def test_list_tasks_succeeds_with_x_api_key():
+    with TestClient(app) as client:
+        res = client.get("/v1/tasks", headers={"X-API-Key": "test-secret"})
+        assert res.status_code == 200
+        assert "tasks" in res.json()
+
+
+def test_list_tasks_succeeds_with_bearer_token():
+    """Frontend Omega callers send Authorization: Bearer <OMEGA_API_TOKEN>."""
+    with TestClient(app) as client:
+        res = client.get("/v1/tasks", headers={"Authorization": "Bearer test-secret"})
+        assert res.status_code == 200
+        assert "tasks" in res.json()
+
+
+def test_create_task_requires_api_key():
+    with TestClient(app) as client:
+        res = client.post("/v1/tasks", json={"goal": "analyze BTCUSDT"})
+        assert res.status_code == 401
+
+
+def test_create_task_succeeds_with_bearer_token():
+    with TestClient(app) as client:
+        res = client.post(
+            "/v1/tasks",
+            json={"goal": "analyze BTCUSDT on 1h"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert "task_id" in body
+
+
+def test_get_task_status_requires_api_key():
+    with TestClient(app) as client:
+        res = client.get("/v1/tasks/does-not-exist")
+        assert res.status_code == 401
+
+
+def test_get_task_summary_requires_api_key():
+    with TestClient(app) as client:
+        res = client.get("/v1/tasks/does-not-exist/summary")
+        assert res.status_code == 401
+
+
+def test_kill_switch_requires_api_key():
+    with TestClient(app) as client:
+        res = client.post("/risk/kill-switch")
+        assert res.status_code == 401
+
+
+def test_kill_switch_rejects_wrong_api_key():
+    with TestClient(app) as client:
+        res = client.post("/risk/kill-switch", headers={"X-API-Key": "wrong"})
+        assert res.status_code == 401
+
+
+def test_protected_routes_fail_closed_when_api_auth_token_unset():
+    """Mirror require_cron_secret: empty api_auth_token disables protected routes."""
+    original = settings.api_auth_token
+    settings.api_auth_token = ""
+    try:
+        with TestClient(app) as client:
+            for method, path, kwargs in (
+                ("get", "/v1/tasks", {}),
+                ("post", "/v1/tasks", {"json": {"goal": "analyze BTCUSDT"}}),
+                ("post", "/risk/kill-switch", {}),
+                ("post", "/trade/submit", {"json": {"asset": "BTCUSDT", "side": "buy", "quantity": 0.01}}),
+            ):
+                res = getattr(client, method)(path, **kwargs)
+                assert res.status_code == 503, f"{method.upper()} {path} -> {res.status_code}"
+                assert "not configured" in res.json()["detail"].lower()
+    finally:
+        settings.api_auth_token = original

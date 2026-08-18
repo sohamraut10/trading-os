@@ -45,8 +45,9 @@ class Settings(BaseSettings):
     debug: bool = False
     log_level: str = "INFO"
 
-    # Auth — set api_auth_token to require it on state-changing endpoints
-    # (trade submit/close/reset, strategy pin, manual analyze-with-execute)
+    # Auth — required for state-changing endpoints (trade, portfolio, strategy,
+    # tasks, analyze-with-execute). Empty disables those routes entirely (fails
+    # closed, same as cron_secret). Frontend OMEGA_API_TOKEN must match this value.
     api_auth_token: str = ""
     cors_allowed_origins: str = "http://localhost:5173,http://localhost:8000,http://localhost:3000"
 
@@ -136,7 +137,7 @@ class Settings(BaseSettings):
     trade_cooldown_minutes: int = 60       # min gap (minutes) between trades on same asset
 
     # Shared secret required on the Authorization header of POST /cron/tick.
-    # Empty disables the endpoint entirely (fails closed, unlike api_auth_token).
+    # Empty disables the endpoint entirely (fails closed).
     cron_secret: str = ""
 
     model_config = SettingsConfigDict(

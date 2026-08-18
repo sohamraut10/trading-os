@@ -12,7 +12,7 @@ import uuid
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any
+from typing import Annotated, Any
 
 logging.basicConfig(
     level=logging.INFO,
@@ -422,22 +422,36 @@ async def _execute_task(task_id: str, asset: str, timeframe: str) -> None:
         _current_task_id.reset(token)
 
 
-def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
+def require_api_key(
+    x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    authorization: Annotated[str | None, Header()] = None,
+) -> None:
     """
-    Gate for state-changing endpoints (trade submission, portfolio mutation,
-    strategy overrides). No-op when api_auth_token is unset, so local/dev use
-    is unaffected until an operator opts in by setting the token.
+    Gate for state-changing endpoints (trade, portfolio, strategy, tasks).
+    Fails closed when api_auth_token is unset (503), mirroring require_cron_secret.
+    Accepts either X-API-Key or Authorization: Bearer against the same token so
+    Trading OS clients (X-API-Key) and frontend Omega callers (Bearer OMEGA_API_TOKEN,
+    which must match API_AUTH_TOKEN) both work. Safe to call directly as
+    require_api_key(x_api_key) from analyze() — authorization defaults to None.
     """
-    if settings.api_auth_token and x_api_key != settings.api_auth_token:
+    if not settings.api_auth_token:
+        raise HTTPException(status_code=503, detail="API auth not configured (api_auth_token unset)")
+    bearer = (
+        authorization[7:].strip()
+        if isinstance(authorization, str) and authorization.lower().startswith("bearer ")
+        else None
+    )
+    if x_api_key != settings.api_auth_token and bearer != settings.api_auth_token:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
-def require_cron_secret(authorization: str | None = Header(default=None)) -> None:
+def require_cron_secret(
+    authorization: Annotated[str | None, Header()] = None,
+) -> None:
     """
-    Gate for POST /cron/tick. Fails closed (unlike require_api_key): with no
-    cron_secret configured the endpoint is disabled outright, since it exists
-    only to be wired into a scheduler (Vercel Cron) and has no legitimate
-    unauthenticated caller.
+    Gate for POST /cron/tick. Fails closed: with no cron_secret configured the
+    endpoint is disabled outright, since it exists only to be wired into a
+    scheduler (Vercel Cron) and has no legitimate unauthenticated caller.
     """
     if not settings.cron_secret:
         raise HTTPException(status_code=503, detail="Cron endpoint not configured (cron_secret unset)")
@@ -1512,14 +1526,18 @@ class TaskRequest(BaseModel):
 
 
 @router.get("/v1/tasks")
-async def list_tasks() -> dict:
+async def list_tasks(_: None = Depends(require_api_key)) -> dict:
     """Return all tasks newest-first (capped at 50). Used by Fable console."""
     tasks = sorted(_task_store.values(), key=lambda t: t["created_at"], reverse=True)
     return {"tasks": tasks[:50]}
 
 
 @router.post("/v1/tasks")
-async def create_task(req: TaskRequest, background_tasks: BackgroundTasks) -> dict:
+async def create_task(
+    req: TaskRequest,
+    background_tasks: BackgroundTasks,
+    _: None = Depends(require_api_key),
+) -> dict:
     """
     Dispatch a free-text goal to the Omega consensus pipeline.
     Asset and timeframe are extracted from the goal text; defaults are BTCUSDT/1h.
@@ -1542,7 +1560,7 @@ async def create_task(req: TaskRequest, background_tasks: BackgroundTasks) -> di
 
 
 @router.get("/v1/tasks/{task_id}")
-async def get_task_status(task_id: str) -> dict:
+async def get_task_status(task_id: str, _: None = Depends(require_api_key)) -> dict:
     """Return task state, goal, and result summary."""
     task = _task_store.get(task_id)
     if not task:
@@ -1551,7 +1569,7 @@ async def get_task_status(task_id: str) -> dict:
 
 
 @router.get("/v1/tasks/{task_id}/summary")
-async def get_task_summary(task_id: str):
+async def get_task_summary(task_id: str, _: None = Depends(require_api_key)):
     """Return formatted markdown output summary for a completed task."""
     task = _task_store.get(task_id)
     if not task:
