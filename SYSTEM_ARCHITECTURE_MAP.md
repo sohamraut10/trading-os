@@ -4,19 +4,35 @@ This document provides a comprehensive map of the entire architecture built so f
 
 ---
 
+## 0. Canonical ports & env (Fable OS monorepo)
+
+| Surface | Port / URL | Notes |
+|---------|------------|-------|
+| Host-local Omega (`make backend` from monorepo root) | **`:8003`** | `uvicorn api.main:app --host 0.0.0.0 --port 8003` |
+| Fable frontend (`make frontend`) | `:3000` | Next.js 15 |
+| Frontend → Omega env | `OMEGA_API_URL=http://localhost:8003` | `TRADING_OS_URL` is a deprecated alias |
+| Docker Compose API (in-network) | `api:8000` / host `localhost:8000` | Container-internal; do **not** use as the monorepo host default |
+| Docker → host Omega | `http://host.docker.internal:8003` | When Fable runs in compose and Omega on the Mac |
+
+Auth: protected routes require `API_AUTH_TOKEN` (`X-API-Key` or `Authorization: Bearer`). Empty token → fail-closed `503`. `/v1/tasks*` is gated.
+
+`api/main.py` is still a large monolith (~1590 lines); split deferred — not blocking current work.
+
+---
+
 ## 1. System Architecture Overview
 
 The system is currently divided into three primary domains, heavily integrated via Docker (Trading OS network) and Redis:
 
 ### A. Fable (The Interface & Orchestrator)
-Fable is a Next.js 15 App Router application that acts as the front door to the entire system.
+Fable is a Next.js 15 App Router application that acts as the front door to the entire system (sibling `frontend/` repo in the Fable OS monorepo).
 * **Voice Agent:** A real-time voice interface powered by TTS and an LLM chain.
-* **LLM Chain (`lib/fable/llm.ts`):** A resilient, multi-backend router supporting `cli-claude`, `cli-grok`, Anthropic API, Groq, Ollama, and Gemini. If one API rate-limits, it automatically fails over to the next and puts the failed backend on a 5-minute cooldown.
+* **LLM Chain (`lib/fable/llm.ts`):** A resilient, multi-backend router supporting `cli-agy`, `cli-claude`, `cli-grok`, Anthropic API, Groq, Ollama, Gemini, and NVIDIA. If one API rate-limits, it automatically fails over to the next and puts the failed backend on a 5-minute cooldown.
 * **Context Injection:** Intercepts queries to fetch live quotes (Yahoo Finance), portfolio state, and trading signals, directly injecting them into the system prompt.
-* **Omega Integration:** Parses `<omega_dispatch>` and `<omega_check>` XML tags from the LLM's output to asynchronously trigger heavy analytical tasks on the backend.
+* **Omega Integration:** Parses `<omega_dispatch>` and `<omega_check>` XML tags from the LLM's output to asynchronously trigger heavy analytical tasks on the backend at `OMEGA_API_URL` (**`:8003`** locally).
 
 ### B. Omega & Trading OS (The Analytical Engine)
-The FastAPI backend (`trading-os-1/api`) that executes trades and runs deep quantitative analysis.
+The FastAPI backend (`api/main.py` in this repo / `sohamraut10/trading-os`) that executes trades and runs deep quantitative analysis.
 * **The Agent Council (`StateGraph`):** A pure-Python, zero-dependency async state machine. Heavy tasks are routed through a gauntlet of specialized agents (Archivist, Harbinger, Seer, Warden, and finally Fable).
 * **The Scratchpad:** A shared dictionary memory structure that allows agents to read each other's outputs concurrently without thread-locking or race conditions.
 * **Execution & Risk:** Handled by `trading-os` through smart routing, bracket orders, and a strict risk engine.

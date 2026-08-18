@@ -146,12 +146,22 @@ trading-os/
 
 ## How to Run
 
-### Local (no Docker)
+### Fable OS monorepo (canonical host-local)
+From the monorepo root (`fable-os/`):
 ```bash
-cd trading-os
+make backend    # uvicorn on :8003 → /tmp/backend.log
+make frontend   # Next.js on :3000 → /tmp/fable-dev.log
+make logs       # tail both
+```
+Frontend talks to Omega via `OMEGA_API_URL=http://localhost:8003` (set `API_AUTH_TOKEN` in `backend/.env`).
+
+### Local (this repo only, no Docker)
+```bash
+cd backend   # or trading-os checkout
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn api.main:app --reload --port 8000
+# Prefer :8003 to match the monorepo Makefile / Fable defaults
+uvicorn api.main:app --reload --host 0.0.0.0 --port 8003
 ```
 
 ### Full stack (Docker Compose)
@@ -159,8 +169,9 @@ uvicorn api.main:app --reload --port 8000
 cd infrastructure
 docker compose up -d
 ```
-- API: http://localhost:8000
-- Grafana: http://localhost:3000 (admin/admin)
+- API (compose host map): http://localhost:8000 — in-network `api:8000`
+- Host-local Omega (Makefile / Fable): http://localhost:8003
+- Grafana: http://localhost:3000 (admin/admin) — conflicts with Fable frontend if both bind :3000
 - Prometheus: http://localhost:9090
 
 ### Key endpoints
