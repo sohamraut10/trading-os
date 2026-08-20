@@ -59,6 +59,20 @@
     handle @api {
         encode gzip zstd
 
+        # Telegram webhook relay — fable.DOMAIN is behind Cloudflare Access
+        # (302s Bot API POSTs). api.DOMAIN is not, so Telegram hits this path
+        # and Caddy rewrites to Fable's /api/telegram. Auth remains
+        # x-telegram-bot-api-secret-token on the upstream handler.
+        handle /telegram/webhook {
+            rewrite * /api/telegram
+            reverse_proxy fable:3000 {
+                header_up Host            fable.{$DOMAIN}
+                header_up X-Real-IP       {remote_host}
+                header_up X-Forwarded-For {remote_host}
+                header_up X-Forwarded-Proto https
+            }
+        }
+
         # WebSocket upgrade passthrough
         @websocket {
             header Connection *Upgrade*

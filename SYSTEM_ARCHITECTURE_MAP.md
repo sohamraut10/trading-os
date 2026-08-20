@@ -13,8 +13,11 @@ This document provides a comprehensive map of the entire architecture built so f
 | Frontend → Omega env | `OMEGA_API_URL=http://localhost:8003` | `TRADING_OS_URL` is a deprecated alias |
 | Docker Compose API | `api:8003` / host `localhost:8003` | Container listen, host map, and in-network all **8003** |
 | Compose Fable → Omega | `OMEGA_API_URL` / `TRADING_OS_URL` = `http://api:8003` | Same Docker network; no `host.docker.internal` for Omega |
+| Telegram inbound webhook | `https://api.mu3en.diy/telegram/webhook` | Caddy under `api.DOMAIN` rewrites → `fable:3000/api/telegram` (Access on `fable.DOMAIN` 302s Bot API) |
+| Telegram outbound (Fable) | `lib/fable/telegram-http.ts` | IPv4-only Node `https` (`family:4`, fresh TCP / no keepAlive Agent, 1 retry on ECONNRESET); compose pins `api.telegram.org` → `149.154.166.110` |
+| Telegram outbound alerts | Trading OS `TelegramAlerter` | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` on `api` |
 
-Auth: protected routes require `API_AUTH_TOKEN` (`X-API-Key` or `Authorization: Bearer`). Empty token → fail-closed `503`. `/v1/tasks*` is gated.
+Auth: protected routes require `API_AUTH_TOKEN` (`X-API-Key` or `Authorization: Bearer`). Empty token → fail-closed `503`. `/v1/tasks*` is gated. `fable.mu3en.diy` remains behind Cloudflare Access for humans; bot traffic uses the api relay above.
 
 `api/main.py` is still a large monolith (~1590 lines); split deferred — not blocking current work.
 

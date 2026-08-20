@@ -300,12 +300,20 @@ services:
       - backend
     environment:
       NODE_ENV: production
+      # Prefer IPv4 for outbound Bot API — IPv6 to api.telegram.org is ENETUNREACH
+      # from this host and default dual-stack Node fetch intermittently ECONNRESET/ETIMEDOUT.
+      NODE_OPTIONS: --dns-result-order=ipv4first
       # Reaches trading OS on the internal Docker network
       TRADING_OS_URL: http://api:8003
       CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-4-6}
       FABLE_CLAUDE_MODEL: claude-sonnet-4-6
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      FABLE_BACKENDS: ${FABLE_BACKENDS:-api-ollama}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Cloud LLM keys — required for Telegram replies when host Ollama is down
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      FABLE_BACKENDS: ${FABLE_BACKENDS:-api-gemini,api-ollama}
       OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
       TTS_VOICE: Samantha
@@ -314,6 +322,7 @@ services:
       ELEVENLABS_VOICE_ID: ${ELEVENLABS_VOICE_ID:-}
       FABLE_ACCESS_TOKEN: ${FABLE_ACCESS_TOKEN}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET}
       OMEGA_API_URL: http://api:8003
       OMEGA_API_TOKEN: ${OMEGA_API_TOKEN}
@@ -325,6 +334,8 @@ services:
       FABLE_API_KEY: ${FABLE_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      # Pin Telegram Bot API to IPv4 — container dual-stack undici times out on AAAA
+      - "api.telegram.org:149.154.166.110"
     # Restore .claude.json from backup (OrbStack file bind-mounts are unreliable)
     command: >
       sh -c '
